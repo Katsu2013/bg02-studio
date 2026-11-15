@@ -1,0 +1,19 @@
+# Dependencies & build artifacts
+node_modules/
+dist/
+.vite/
+
+# Generated TypeDoc output (optional local build)
+docs/api/
+
+# Environment & local caches
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

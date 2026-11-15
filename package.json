@@ -1,0 +1,23 @@
+{
+  "name": "bg02-studio",
+  "version": "0.1.0",
+  "description": "100% local, privacy-first TypeScript PWA for customizing and uploading circular 240x240 display images to the BG02 (E-BADGE) via Web Bluetooth.",
+  "license": "MIT",
+  "author": "Katsu Yamazawa",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "docs": "typedoc"
+  },
+  "devDependencies": {
+    "typedoc": "^0.28.20",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  }
+}
