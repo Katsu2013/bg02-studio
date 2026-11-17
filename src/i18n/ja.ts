@@ -172,7 +172,7 @@ export const jaDictionary: TranslationSchema = {
     refusalBatteryTitle: "電池残量が不足しています（20%以上必要）",
     refusalChargingTitle: "充電ケーブルを抜いてください",
     refusalStorageAdvice:
-      "編集に戻って「細かく調整」から JPEG 品質を下げるか、端末の詳細から空き容量を確認してください。",
+      "編集に戻って「細かく調整」から JPEG 品質を下げるか、BG02 実機側の操作で不要な画像（初期プリセット等）を削除して空き容量を増やしてください。",
     refusalPowerAdvice:
       "BG02（確認済み V35922）は電池残量 20% 以上かつ充電ケーブルを外した状態でのみ書き込みを受け付けます。",
     labelBattery: "電池残量",

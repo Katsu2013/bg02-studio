@@ -172,7 +172,7 @@ export const enDictionary: TranslationSchema = {
     refusalBatteryTitle: "Badge battery below 20%",
     refusalChargingTitle: "Unplug the charging cable",
     refusalStorageAdvice:
-      "Go back to Adjust photo and lower JPEG quality inside Fine adjustments, or inspect remaining space in Badge details.",
+      "Go back to Adjust photo and lower JPEG quality inside Fine adjustments, or delete unused images (such as factory presets) directly on the BG02 badge to free space.",
     refusalPowerAdvice:
       "Verified BG02 firmware (V35922) requires battery >= 20% and charger unplugged before accepting uploads.",
     labelBattery: "Battery",

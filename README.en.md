@@ -45,7 +45,7 @@ See [docs/BACKGROUND.md](./docs/BACKGROUND.md) and [docs/PROTOCOL.md](./docs/PRO
 | Android (Chrome / Edge) | Supported (BT & nearby permission required) | Chrome-version dependent | Supported |
 | iOS / iPadOS Safari | **Not supported** | Not supported | **Supported** |
 
-- **Hardware baseline**: Original protocol captures were measured on `BG02` (`Manufacturer: LJ733_V1_BadgeOK`, `Hardware: LJ733_MB_V1.5`, `Firmware: V35922`, `240×240` Round, `algorithm = 4`). Post-redesign send flows were verified against a 2-device simulated BLE client; final smoke verification on physical hardware is recommended prior to distribution.
+- **Hardware baseline**: Measured and verified on physical `BG02` hardware (`Manufacturer: LJ733_V1_BadgeOK`, `Hardware: LJ733_MB_V1.5`, `Firmware: V35922`, `240×240` Round, `algorithm = 4`). Post-redesign image transfers have been verified on real `BG02` hardware alongside multi-badge simulated BLE tests.
 
 ---
 
@@ -55,8 +55,9 @@ Due to Web Bluetooth API and device firmware constraints, the following are not 
 
 1. **No Firmware Modification or Built-in Settings Font Replacement**
    - Cannot fix mojibake inside the badge's own hardware settings menus. Custom Japanese text is rendered cleanly inside generated JPEG display images instead.
-2. **Cannot Delete Factory Preset Images**
-   - The `mywatchsdklib` protocol used by `BG02` exposes no image-delete command. Custom transfers overwrite fixed slot `watchID = 5538`.
+2. **No Remote Image Deletion Over BLE (Delete Presets on Device Instead)**
+   - The `mywatchsdklib` BLE protocol exposes no remote image-delete command, and custom transfers overwrite fixed slot `watchID = 5538`.
+   - However, **initial factory preset images can be deleted directly on the BG02 device itself** if you want to free flash storage.
 3. **No Phone Call / App Notification Forwarding**
    - Browsers/PWAs cannot access Android's `NotificationListenerService`.
 4. **No Background Daemon & No iOS Safari Support**
