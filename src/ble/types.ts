@@ -181,6 +181,9 @@ export interface DialStartOptions {
   readonly cfgMask: number;
 }
 
+/** Transfer stage indicator emitted alongside normalized chunk progress. */
+export type UploadStage = "start" | "transferring" | "awaiting_finish";
+
 /** Options passed when uploading a custom JPEG image via `WatchTheme3`. */
 export interface UploadDialOptions {
   /** Watch face identifier written into the Start frame (defaults to `5538`). */
@@ -189,7 +192,9 @@ export interface UploadDialOptions {
   readonly fileType?: number;
   /** Override chunk size in bytes (defaults to device-reported `watchThemeShortPkgLength` or `5000`). */
   readonly chunkSize?: number;
-  /** Progress callback receiving a ratio between `0` and `1` and current transferred byte count. */
+  /** Expected connected `device.id`; upload refuses to write if active session differs. */
+  readonly expectedDeviceId?: string;
+  /** Progress callback receiving normalized ratio `[0, 1]`, bytes, and transfer stage. */
   readonly onProgress?: (progress: UploadProgress) => void;
 }
 
@@ -205,10 +210,14 @@ export interface UploadProgress {
   readonly currentChunk: number;
   /** Total WatchTheme3 chunk count. */
   readonly totalChunks: number;
+  /** Optional explicit protocol stage distinguishing chunk TX from post-chunk completion wait. */
+  readonly stage?: UploadStage;
 }
 
 /** Final verification summary resolved upon successful WatchTheme3 upload completion (`code === 2`). */
 export interface UploadDialResult {
+  /** Connected `device.id` that confirmed `FINISH_OK` (`code === 2`). */
+  readonly deviceId: string;
   /** Raw JPEG byte length before WatchTheme3 4-byte length header wrapping. */
   readonly imageBytes: number;
   /** Total WatchTheme3 payload byte length (`imageBytes + 4`). */
@@ -250,6 +259,41 @@ export class Bg02ProtocolError extends Error {
     this.name = "Bg02ProtocolError";
     this.statusCode = statusCode;
     this.errorKey = errorKey;
+  }
+}
+
+/** Categorized Web Bluetooth connection failure causes surfaced for UI recovery actions. */
+export type Bg02ConnectFailureReason = "permission_unavailable" | "gatt_failed" | "unsupported";
+
+/**
+ * Typed connection error carrying a structured failure reason so the UI can distinguish
+ * missing browser permission (open chooser) from RF/GATT failure (check power & range).
+ */
+export class Bg02ConnectError extends Error {
+  /** Failure category used by Send/Detail panels to render targeted recovery controls. */
+  public readonly reason: Bg02ConnectFailureReason;
+  /** Identifier of the selected/cached Bluetooth device whose connection failed, when known. */
+  public readonly deviceId?: string;
+  /** Advertised device name of the selected/cached Bluetooth device, when known. */
+  public readonly deviceName?: string;
+
+  /**
+   * Constructs a categorized BG02 connection error.
+   *
+   * @param reason - Structured failure cause (`"permission_unavailable"`, `"gatt_failed"`, or `"unsupported"`).
+   * @param message - Diagnostic fallback message describing the failure.
+   * @param device - Optional identity metadata captured after a device was chosen or reused.
+   */
+  public constructor(
+    reason: Bg02ConnectFailureReason,
+    message: string,
+    device?: { readonly id?: string; readonly name?: string }
+  ) {
+    super(message);
+    this.name = "Bg02ConnectError";
+    this.reason = reason;
+    this.deviceId = device?.id;
+    this.deviceName = device?.name;
   }
 }
 

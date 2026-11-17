@@ -92,8 +92,10 @@ export interface CompositedBadgeResult {
   readonly exceedsTarget: boolean;
   /** Structural SOF0/dimensions inspection result computed from `jpegBytes`. */
   readonly inspection: JpegInspectionResult;
-  /** Offscreen rasterized canvas holding the exact 240×240 export bitmap without guide overlays. */
+  /** Offscreen rasterized canvas holding the exact export bitmap without guide overlays. */
   readonly exportCanvas: HTMLCanvasElement;
+  /** Monotonic draft edit generation matching the state encoded into `jpegBytes`. */
+  readonly draftGeneration?: number;
 }
 
 /** Dimension specification passed to compositor renderers and preview helpers. */

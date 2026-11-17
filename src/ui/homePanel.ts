@@ -1,489 +1,282 @@
-/**
- * @module ui/homePanel
- * Screen 1 (`activeScreen === "home"`): Beginner-friendly Home view listing registered
- * BG02 badges with essential status & battery info, one-tap Connect & Push actions,
- * offline image trial entry, and navigation to Device Details / Bluetooth Unpair instructions.
- */
-
+/** @module ui/homePanel */
 import { interpolate } from "../i18n/i18n";
 import type { TranslationSchema } from "../i18n/types";
+import { hasPublishableBadgeContent } from "../imaging/badgeCompositor";
 import type { AppStateSnapshot } from "../state/appStore";
-import { DEVICE_ACCENT_PALETTE, type SavedBadgeProfile } from "../state/deviceRegistry";
+import { drawCircularThumbnailCanvas } from "./badgeStatusHelper";
 import { createButton, createEl, createIconButton, type IconButtonHandle } from "./domHelpers";
-import { createStudioIcon, type StudioIconName } from "./icons";
+import type { GuideHint } from "./firstRun";
+import { createStudioIcon } from "./icons";
 
-/** Callbacks dispatched by {@link HomePanel} user interactions. */
+/** Bundled sample available to both the decorative preview and the editor. */
+export const SAMPLE_PHOTO_URL = `${import.meta.env.BASE_URL}sample-fuji.jpg`;
+
+/** Home actions implemented by the shared application controller. */
 export interface HomePanelHandlers {
-  /** Opens the Web Bluetooth picker to pair/connect a new or unplugged BG02 badge. */
-  readonly onAddOrConnectDevice: () => void;
-  /** Connects (if needed) to the tapped badge card and enters Screen 2 (`"push"`). */
-  readonly onSelectBadgeAndPush: (deviceId: string) => void;
-  /** Opens Screen 3 (`"device-detail"`) for a specific badge or general unpair instructions. */
-  readonly onOpenDeviceDetail: (deviceId: string | null) => void;
-  /** Disconnects the active GATT session cleanly. */
-  readonly onDisconnect: () => void;
-  /** Aborts an in-flight automatic reconnect loop. */
-  readonly onCancelAutoReconnect: () => void;
-  /** Enters Screen 2 (`"push"`) in offline composition mode without waiting for Bluetooth. */
-  readonly onOpenOfflinePush: () => void;
+  /** Opens the local photo picker. */
+  readonly onPickPhoto: () => void;
+  /** Loads the bundled photo into the editor. */
+  readonly onTrySample: () => void;
+  /** Continues the current draft in the editor. */
+  readonly onContinueEditing: () => void;
+  /** Starts editing with the text panel open. */
+  readonly onCreateTextOnly: () => void;
+  /** Opens the Bluetooth chooser. */
+  readonly onConnectBadge: () => void;
+  /** Tries the given saved badge. */
+  readonly onReconnectLast: (deviceId: string) => void;
+  /** Retries the failed connection through the controller’s recovery path. */
+  readonly onRetryFailedConnect: () => void;
+  /** Cancels a pending automatic reconnection. */
+  readonly onCancelReconnect: () => void;
+  /** Opens settings for just the badge displayed on Home. */
+  readonly onManageBadge: (deviceId: string) => void;
 }
 
-/**
- * Constructs a small decorative circular mini-badge avatar mirroring physical BG02 dials cleanly via SVG.
- *
- * @returns Styled circular avatar `<span>` element.
- */
-function createMiniDialAvatar(): HTMLSpanElement {
-  return createEl(
-    "span",
-    { className: "badge-card-avatar", attrs: { "aria-hidden": "true" } },
-    [createStudioIcon("badge", 28)]
-  );
+/** Shared content of the connection control on Home. */
+export interface HomeLinkState {
+  /** Whether a connection operation disables the button. */
+  readonly busy: boolean;
+  /** Whether the button cancels a running recovery. */
+  readonly recovering: boolean;
+  /** Text shown on the connection button. */
+  readonly label: string;
+  /** Action executed by either instance of the connection button. */
+  readonly action: () => void;
+  /** Connection status or recovery advice. */
+  readonly copy: string;
+  /** Instructions used when the first-visit guide highlights the button. */
+  readonly guideCopy: string;
 }
 
-/** Handle exposing a SuperBand-style Home action row and its localized text nodes. */
-export interface HomeActionRowHandle {
-  /** Native `<button type="button">` row container. */
-  readonly button: HTMLButtonElement;
-  /** Primary row title label updated on locale switches. */
-  readonly titleEl: HTMLSpanElement;
-  /** Concise secondary helper subtitle updated on locale switches. */
-  readonly descEl: HTMLSpanElement;
-}
-
-/**
- * Builds a SuperBand-style white action row opening secondary Home views (`offline push`, `unpair guide`).
- *
- * @param iconName - Vector icon name rendered inside the pastel icon square.
- * @param pastel - Soft pastel tint identifier (`"violet" | "amber" | "mint" | "blue"`).
- * @param initialTitle - Initial primary row title text.
- * @param initialDesc - Initial secondary description text.
- * @param onClick - Click handler invoked on activation.
- * @returns Handle containing the row button and mutable title/description nodes.
- */
-function createHomeActionRow(
-  iconName: StudioIconName,
-  pastel: "violet" | "amber" | "mint" | "blue",
-  initialTitle: string,
-  initialDesc: string,
-  onClick: () => void
-): HomeActionRowHandle {
-  const iconBox = createEl(
-    "span",
-    { className: "pastel-tile-icon pastel-badge-icon", attrs: { "data-pastel": pastel } },
-    [createStudioIcon(iconName, 18)]
-  );
-  const titleEl = createEl("span", { className: "home-row-title", text: initialTitle });
-  const descEl = createEl("span", { className: "home-row-desc", text: initialDesc });
-  const chevron = createEl("span", { className: "func-chevron", attrs: { "aria-hidden": "true" } }, [
-    createStudioIcon("chevronRight", 18),
-  ]);
-
-  const button = createEl("button", { className: "home-action-row" }, [
-    iconBox,
-    createEl("span", { className: "home-row-text" }, [titleEl, descEl]),
-    chevron,
-  ]);
-  button.type = "button";
-  button.addEventListener("click", onClick);
-  return { button, titleEl, descEl };
-}
-
-/**
- * Renders Screen 1 (Home / Device List) separating onboarding, multi-badge cards,
- * offline preview access, and Device Details / Bluetooth Unpair instructions.
- */
+/** Home setup, editing entry points, and the status card for the displayed badge. */
 export class HomePanel {
-  /** Root DOM container for the Home screen. */
+  /** Root of the home screen. */
   public readonly element: HTMLElement;
+  /** Preferred focus target on return to Home. */
+  public get primaryCtaBtn(): HTMLButtonElement {
+    return this.setup.hidden ? this.photo.button : this.setupConnect.button;
+  }
+  /** Current first-visit hint, or null while connection is in progress. */
+  public guideHint: GuideHint | null = null;
 
-  /** Active translation dictionary reference. */
+  /** Current translations. */
   private dict: TranslationSchema;
-  /** Interaction handler callbacks. */
-  private readonly handlers: HomePanelHandlers;
-  /** Accessible screen heading (`<h2>`). */
-  private readonly screenHeadingEl: HTMLHeadingElement;
-  /** First-run onboarding card shown when no badges have been paired yet. */
-  private readonly emptyWelcomeCard: HTMLElement;
-  /** Welcome card title element. */
-  private readonly welcomeTitleEl: HTMLHeadingElement;
-  /** Welcome card lead tagline element. */
-  private readonly welcomeLeadEl: HTMLParagraphElement;
-  /** Ordered onboarding list step elements (`1..3`). */
-  private readonly welcomeStepEls: ReadonlyArray<HTMLLIElement>;
-  /** Welcome card primary Connect button. */
-  private readonly welcomeConnectBtn: IconButtonHandle;
-  /** Live reconnection progress notice banner shown while retrying after a drop. */
-  private readonly reconnectBannerEl: HTMLDivElement;
-  /** Live reconnection status text node. */
-  private readonly reconnectBannerTextEl: HTMLSpanElement;
-  /** Button aborting active automatic reconnection retries. */
-  private readonly cancelReconnectBtn: HTMLButtonElement;
-  /** Wrapper section containing registered badge cards (`display: none` when empty). */
-  private readonly devicesSectionEl: HTMLElement;
-  /** Registered badges section heading (`<h3>`). */
-  private readonly devicesHeadingEl: HTMLHeadingElement;
-  /** Dynamic badge card list mount container. */
-  private readonly badgeCardListEl: HTMLDivElement;
-  /** Button adding a second or replacement BG02 badge when devices are already saved. */
-  private readonly addDeviceBtn: IconButtonHandle;
-  /** Helper tools & guide section heading (`<h3>`). */
-  private readonly moreHeadingEl: HTMLHeadingElement;
-  /** White action row entering Screen 2 (`"push"`) in offline composition mode. */
-  private readonly offlinePushRow: HomeActionRowHandle;
-  /** White action row opening Screen 3 (`"device-detail"`) & Bluetooth Unpair instructions. */
-  private readonly unpairGuideRow: HomeActionRowHandle;
-  /** Concise beginner note stating >= 20% battery and unplugged charger rule. */
-  private readonly batteryRuleFooterEl: HTMLParagraphElement;
-  /** Signature memo preventing needless card DOM recreation while hovering or tapping buttons. */
-  private lastCardsSignature = "";
+  /** User's choice to access the editor during this session without connecting. */
+  private offlinePreview = false;
+  /** Action shared by the Home setup and status card recovery buttons. */
+  private connectionAction: () => void = () => undefined;
+  /** ID of the badge shown in the status card. */
+  private displayedBadgeId: string | null = null;
+  /** Most recent state, for toggling the offline preview. */
+  private rendered: {
+    /** Store snapshot at the last render. */
+    state: AppStateSnapshot;
+    /** Image displayed in the circular draft preview. */
+    canvas: HTMLCanvasElement | null;
+    /** Browser connection capability. */
+    available: boolean;
+  } | null = null;
 
-  /**
-   * Builds the beginner-first Home screen layout cleanly via safe DOM helpers.
-   *
-   * @param initialDict - Active localization dictionary.
-   * @param handlers - User action callbacks.
-   */
+  /** Main heading for the active setup or creation panel. */
+  private readonly heading = createEl("h1", { className: "home-title" });
+  /** Setup panel containing first-connection help and action. */
+  private readonly setup: HTMLElement;
+  /** Setup instructions and connection progress. */
+  private readonly setupCopy = createEl("p", { className: "home-description", attrs: { role: "status" } });
+  /** Prominent connect/recovery control on the setup screen. */
+  private readonly setupConnect: IconButtonHandle;
+  /** Opens photo tools without a Bluetooth session. */
+  private readonly offline: HTMLButtonElement;
+  /** Panel with creation and draft actions. */
+  private readonly create: HTMLElement;
+  /** Instructions beside the creation actions. */
+  private readonly createCopy = createEl("p", { className: "home-description" });
+  /** Opens the native file picker. */
+  private readonly photo: IconButtonHandle;
+  /** Opens the text editor. */
+  private readonly text: IconButtonHandle;
+  /** Loads the bundled sample. */
+  private readonly sample: HTMLButtonElement;
+  /** Continues the existing draft. */
+  private readonly resume: HTMLButtonElement;
+  /** Previous draft's circular preview canvas. */
+  private readonly thumbnail = createEl("canvas", { className: "home-photo-preview" });
+  /** Decorative photo shown when there is no draft. */
+  private readonly image = createEl("img", {
+    className: "home-photo-preview",
+    attrs: { alt: "", src: SAMPLE_PHOTO_URL, width: "400", height: "400", fetchpriority: "high" },
+  });
+  /** Photo-load failure message. */
+  private readonly error = createEl("p", { className: "inline-alert", attrs: { role: "alert", "data-tone": "err" } });
+  /** Connected or optional setup card below the hero. */
+  private readonly deviceCard: HTMLElement;
+  /** Name of the displayed badge. */
+  private readonly deviceName = createEl("h2");
+  /** Current status or recovery advice. */
+  private readonly deviceStatus = createEl("p", { attrs: { role: "status" } });
+  /** Directly opens the displayed badge’s settings or recovers the connection. */
+  private readonly deviceButton: HTMLButtonElement;
+
+  /** Builds the static Home layout and binds its controls. */
   public constructor(initialDict: TranslationSchema, handlers: HomePanelHandlers) {
     this.dict = initialDict;
-    this.handlers = handlers;
     const h = initialDict.home;
-
-    this.screenHeadingEl = createEl("h2", {
-      className: "sr-only",
-      text: h.screenHeading,
+    this.setupConnect = createIconButton("btn btn-primary home-setup-connect", "bluetooth", h.btnConnectBadge, 18);
+    this.setupConnect.button.addEventListener("click", () => this.connectionAction());
+    this.offline = createButton("btn home-link", h.btnOffline);
+    this.offline.addEventListener("click", () => {
+      if (!this.rendered) return;
+      const { state, canvas, available } = this.rendered;
+      this.offlinePreview = true;
+      this.render(state, canvas, available);
+      this.photo.button.focus({ preventScroll: true });
     });
+    this.setup = createEl("div", {}, [
+      this.setupCopy,
+      createEl("div", { className: "home-actions" }, [this.setupConnect.button]),
+      this.offline,
+    ]);
 
-    // 1. Reconnect banner (hidden unless auto-retry loop runs on Home)
-    this.reconnectBannerTextEl = createEl("span");
-    this.cancelReconnectBtn = createButton(
-      "btn btn-sm",
-      initialDict.connection.btnCancelReconnect
-    );
-    this.cancelReconnectBtn.addEventListener("click", () => handlers.onCancelAutoReconnect());
-    this.reconnectBannerEl = createEl(
-      "div",
-      { className: "reconnect-banner", attrs: { hidden: "", role: "status" } },
-      [this.reconnectBannerTextEl, this.cancelReconnectBtn]
-    );
+    this.photo = createIconButton("btn btn-primary", "photo", h.btnPickPhoto, 18);
+    this.photo.button.addEventListener("click", handlers.onPickPhoto);
+    this.text = createIconButton("btn home-link", "text", h.btnTextOnly, 17);
+    this.text.button.addEventListener("click", handlers.onCreateTextOnly);
+    this.sample = createButton("btn home-link home-small-link", h.btnSample);
+    this.sample.addEventListener("click", handlers.onTrySample);
+    this.resume = createButton("btn home-link home-small-link", h.btnContinueEdit);
+    this.resume.addEventListener("click", handlers.onContinueEditing);
+    this.create = createEl("div", {}, [
+      this.createCopy,
+      createEl("div", { className: "home-actions" }, [this.photo.button, this.text.button]),
+      this.sample,
+      this.resume,
+    ]);
 
-    // 2. Onboarding Empty Welcome Hero
-    this.welcomeTitleEl = createEl("h3", {
-      className: "welcome-hero-title",
-      text: h.welcomeTitle,
+    this.deviceButton = createButton("btn btn-secondary", h.btnManage);
+    this.deviceButton.addEventListener("click", () => {
+      if (this.displayedBadgeId) handlers.onManageBadge(this.displayedBadgeId);
+      else this.connectionAction();
     });
-    this.welcomeLeadEl = createEl("p", {
-      className: "welcome-hero-lead",
-      text: h.welcomeLead,
-    });
-    const step1 = createEl("li", { text: h.welcomeStep1 });
-    const step2 = createEl("li", { text: h.welcomeStep2 });
-    const step3 = createEl("li", { text: h.welcomeStep3 });
-    this.welcomeStepEls = [step1, step2, step3];
-
-    this.welcomeConnectBtn = createIconButton("btn btn-hero-white", "bluetooth", h.btnConnectNew, 16);
-    this.welcomeConnectBtn.button.addEventListener("click", () => handlers.onAddOrConnectDevice());
-
-    this.emptyWelcomeCard = createEl("section", { className: "hero-welcome-card" }, [
-      createEl("div", { className: "welcome-hero-top" }, [
-        createMiniDialAvatar(),
-        createEl("div", { className: "welcome-hero-copy" }, [
-          this.welcomeTitleEl,
-          this.welcomeLeadEl,
+    this.deviceCard = createEl("div", { className: "home-connection" }, [
+      createEl("span", { className: "home-connection-icon" }, [createStudioIcon("bluetooth", 20)]),
+      createEl("div", { className: "home-connection-copy" }, [this.deviceName, this.deviceStatus]),
+      this.deviceButton,
+    ]);
+    this.element = createEl("section", { className: "screen-view home-screen", attrs: { id: "home" } }, [
+      createEl("div", { className: "home-hero" }, [
+        createEl("div", { className: "home-hero-info" }, [this.heading, this.setup, this.create]),
+        createEl("div", { className: "home-visual", attrs: { "aria-hidden": "true" } }, [
+          createEl("div", { className: "home-orbit" }),
+          createEl("div", { className: "home-disc" }, [this.image, this.thumbnail]),
         ]),
       ]),
-      createEl("ol", { className: "welcome-steps-list" }, [step1, step2, step3]),
-      this.welcomeConnectBtn.button,
+      this.error,
+      this.deviceCard,
     ]);
-
-    // 3. Registered Badge Cards Section
-    this.devicesHeadingEl = createEl("h3", {
-      className: "func-section-heading",
-      text: h.sectionDevices,
-    });
-    this.badgeCardListEl = createEl("div", { className: "home-device-list" });
-    this.addDeviceBtn = createIconButton("btn btn-add-outline", "plus", h.btnConnectNew, 15);
-    this.addDeviceBtn.button.addEventListener("click", () => handlers.onAddOrConnectDevice());
-
-    this.devicesSectionEl = createEl("section", { className: "home-devices-section" }, [
-      this.devicesHeadingEl,
-      this.badgeCardListEl,
-      this.addDeviceBtn.button,
-    ]);
-
-    // 4. More / Offline Editor & Unpair Guide Section
-    this.moreHeadingEl = createEl("h3", {
-      className: "func-section-heading",
-      text: h.sectionMoreActions,
-    });
-    this.offlinePushRow = createHomeActionRow(
-      "photo",
-      "violet",
-      h.btnOpenOfflineEditor,
-      h.btnOpenOfflineEditorDesc,
-      () => handlers.onOpenOfflinePush()
-    );
-    this.unpairGuideRow = createHomeActionRow(
-      "unlink",
-      "amber",
-      h.btnOpenUnpairGuide,
-      h.btnOpenUnpairGuideDesc,
-      () => handlers.onOpenDeviceDetail(null)
-    );
-
-    const moreList = createEl("div", { className: "home-more-list" }, [
-      this.offlinePushRow.button,
-      this.unpairGuideRow.button,
-    ]);
-
-    this.batteryRuleFooterEl = createEl("p", {
-      className: "hint-caption home-rule-note",
-      text: h.batteryRuleFooter,
-    });
-
-    this.element = createEl(
-      "div",
-      { className: "home-screen-stack", attrs: { "aria-label": h.screenHeading } },
-      [
-        this.screenHeadingEl,
-        this.reconnectBannerEl,
-        this.emptyWelcomeCard,
-        this.devicesSectionEl,
-        this.moreHeadingEl,
-        moreList,
-        this.batteryRuleFooterEl,
-      ]
-    );
+    this.handlers = handlers;
   }
 
-  /**
-   * Applies newly activated translations to static controls and rebuilds badge cards cleanly.
-   *
-   * @param nextDict - Updated locale dictionary.
-   * @param state - Latest store state snapshot.
-   */
-  public updateLocale(nextDict: TranslationSchema, state: AppStateSnapshot): void {
-    this.dict = nextDict;
-    const h = nextDict.home;
-    this.screenHeadingEl.textContent = h.screenHeading;
-    this.element.setAttribute("aria-label", h.screenHeading);
-    this.welcomeTitleEl.textContent = h.welcomeTitle;
-    this.welcomeLeadEl.textContent = h.welcomeLead;
-    this.welcomeStepEls[0].textContent = h.welcomeStep1;
-    this.welcomeStepEls[1].textContent = h.welcomeStep2;
-    this.welcomeStepEls[2].textContent = h.welcomeStep3;
-    this.welcomeConnectBtn.labelEl.textContent = h.btnConnectNew;
-    this.cancelReconnectBtn.textContent = nextDict.connection.btnCancelReconnect;
-    this.devicesHeadingEl.textContent = h.sectionDevices;
-    this.addDeviceBtn.labelEl.textContent = h.btnConnectNew;
-    this.moreHeadingEl.textContent = h.sectionMoreActions;
-    this.offlinePushRow.titleEl.textContent = h.btnOpenOfflineEditor;
-    this.offlinePushRow.descEl.textContent = h.btnOpenOfflineEditorDesc;
-    this.unpairGuideRow.titleEl.textContent = h.btnOpenUnpairGuide;
-    this.unpairGuideRow.descEl.textContent = h.btnOpenUnpairGuideDesc;
-    this.batteryRuleFooterEl.textContent = h.batteryRuleFooter;
+  /** Callbacks shared with the application controller. */
+  private readonly handlers: HomePanelHandlers;
 
-    this.lastCardsSignature = "";
-    this.render(state);
+  /** Updates the Home strings without losing the draft or step. */
+  public updateLocale(dict: TranslationSchema, state: AppStateSnapshot, canvas: HTMLCanvasElement | null, available: boolean): void {
+    this.dict = dict;
+    this.render(state, canvas, available);
   }
 
-  /**
-   * Synchronizes registered device cards, empty onboarding state, and active reconnect banner.
-   *
-   * @param state - Latest immutable store snapshot.
-   */
-  public render(state: AppStateSnapshot): void {
-    const isBusy =
-      state.connectionStatus === "connecting" ||
-      state.connectionStatus === "uploading" ||
-      state.connectionStatus === "reconnecting";
-    const isLinked =
-      state.connectionStatus === "connected" || state.connectionStatus === "uploading";
-
-    this.welcomeConnectBtn.button.disabled = isBusy;
-    this.addDeviceBtn.button.disabled = isBusy;
-
-    if (state.connectionStatus === "reconnecting" && state.reconnectStatus) {
-      const targetProfile = state.savedDevices.find(
-        (d) => d.id === state.reconnectStatus?.targetDeviceId
-      );
-      this.reconnectBannerTextEl.textContent = interpolate(
-        this.dict.connection.reconnectingNotice,
-        {
-          name: targetProfile?.nickname || "BG02",
-          attempt: state.reconnectStatus.attempt,
-          max: state.reconnectStatus.maxAttempts,
-        }
-      );
-      this.reconnectBannerEl.hidden = false;
-    } else {
-      this.reconnectBannerEl.hidden = true;
-    }
-
-    const hasDevices = state.savedDevices.length > 0;
-    this.emptyWelcomeCard.hidden = hasDevices;
-    this.devicesSectionEl.hidden = !hasDevices;
-
-    if (!hasDevices) {
-      this.lastCardsSignature = "";
-      this.badgeCardListEl.replaceChildren();
-      return;
-    }
-
-    // Check only essential fields for the card list signature so animations stay smooth
-    const liveBattery = state.metadata?.standardInfo?.batteryPercent;
-    const signature = JSON.stringify({
-      devices: state.savedDevices.map((d) => ({
-        id: d.id,
-        nickname: d.nickname,
-        accentHex: d.accentHex,
-        bat: d.lastBatteryPercent,
-      })),
-      liveIds: state.liveDeviceIds,
-      activeId: state.activeDeviceId,
-      status: state.connectionStatus,
-      liveBattery,
-      locale: this.dict.home.screenHeading,
-    });
-    if (signature === this.lastCardsSignature) {
-      return;
-    }
-    this.lastCardsSignature = signature;
-
-    const cards = state.savedDevices.map((profile, idx) =>
-      this.buildBadgeCard(profile, idx, state, isBusy, isLinked)
-    );
-    this.badgeCardListEl.replaceChildren(...cards);
-  }
-
-  /**
-   * Builds a minimalist Home card displaying badge identity, connection status, battery %,
-   * primary Send action, and quick Details/Unpair button.
-   *
-   * @param profile - Saved badge metadata profile.
-   * @param index - Zero-based display order (`0` rendered as featured gradient hero card when active).
-   * @param state - Latest store state snapshot.
-   * @param isBusy - `true` while connecting, reconnecting, or uploading.
-   * @param isLinked - `true` when any GATT link is active.
-   * @returns Constructed card `<article>` element.
-   */
-  private buildBadgeCard(
-    profile: SavedBadgeProfile,
-    index: number,
-    state: AppStateSnapshot,
-    isBusy: boolean,
-    isLinked: boolean
-  ): HTMLElement {
+  /** Reflects the shared store without maintaining a second Bluetooth connection. */
+  public render(state: AppStateSnapshot, canvas: HTMLCanvasElement | null, available = true): void {
+    this.rendered = { state, canvas, available };
     const h = this.dict.home;
-    const c = this.dict.connection;
-    const isActive = profile.id === state.activeDeviceId;
-    const isConnectedHere = isActive && isLinked;
-    const isConnectingHere =
-      isActive &&
-      (state.connectionStatus === "connecting" || state.connectionStatus === "reconnecting");
-    const isPrimaryHero = isConnectedHere || (state.activeDeviceId === null && index === 0) || isActive;
+    const connected = state.connectionStatus === "connected" ? state.metadata : null;
+    const showCreate = !!connected || this.offlinePreview || !available;
+    const hasDraft = hasPublishableBadgeContent(Boolean(state.sourceMeta), state.textOverlay);
+    this.displayedBadgeId = connected?.deviceId ?? null;
+    const activeProfile = state.savedDevices.find((profile) => profile.id === this.displayedBadgeId);
+    const link = this.resolveConnection(state);
 
-    const batteryPercent =
-      isConnectedHere && state.metadata?.standardInfo?.batteryPercent !== undefined
-        ? state.metadata.standardInfo.batteryPercent
-        : profile.lastBatteryPercent;
+    this.heading.textContent = showCreate ? h.heading : h.setupHeading;
+    this.setup.hidden = showCreate;
+    this.create.hidden = !showCreate;
+    this.setupCopy.textContent = link.copy;
+    this.setupConnect.labelEl.textContent = link.label;
+    this.setupConnect.button.disabled = link.busy;
+    this.setupConnect.button.classList.toggle("btn-primary", !link.recovering);
+    this.setupConnect.button.classList.toggle("btn-secondary", link.recovering);
+    this.connectionAction = link.action;
+    this.offline.textContent = h.btnOffline;
+    this.createCopy.textContent = h.lead;
+    this.photo.labelEl.textContent = h.btnPickPhoto;
+    this.photo.button.disabled = state.isLoadingImage;
+    this.text.labelEl.textContent = h.btnTextOnly;
+    this.sample.textContent = h.btnSample;
+    this.sample.disabled = state.isLoadingImage;
+    this.sample.hidden = hasDraft;
+    this.resume.textContent = h.btnContinueEdit;
+    this.resume.hidden = !hasDraft;
+    this.image.hidden = hasDraft && showCreate;
+    this.thumbnail.hidden = !hasDraft || !showCreate;
+    if (!this.thumbnail.hidden) drawCircularThumbnailCanvas(this.thumbnail, canvas);
 
-    const statusText = isConnectedHere
-      ? c.statusConnected
-      : isConnectingHere
-        ? state.connectionStatus === "reconnecting" && state.reconnectStatus
-          ? interpolate(c.statusReconnecting, {
-              attempt: state.reconnectStatus.attempt,
-              max: state.reconnectStatus.maxAttempts,
-            })
-          : c.statusConnecting
-        : c.statusDisconnected;
-
-    const statusBadgeEl = createEl("span", {
-      className: "badge-card-status",
-      text: statusText,
-      attrs: {
-        "data-tone": isConnectedHere ? "ok" : isConnectingHere ? "info" : "neutral",
-      },
-    });
-
-    const batteryText = batteryPercent !== null ? `${batteryPercent}%` : c.valueNotRead;
-    const isLowBattery = batteryPercent !== null && batteryPercent < 20;
-    const batteryBadgeEl = createEl(
-      "span",
-      {
-        className: "badge-card-battery",
-        attrs: isLowBattery ? { "data-tone": "warn" } : {},
-      },
-      [
-        createStudioIcon("battery", 15),
-        createEl("span", {
-          text: isLowBattery ? `${batteryText} · ${h.batteryNoteLow}` : batteryText,
-        }),
-      ]
-    );
-
-    const paletteIdx = DEVICE_ACCENT_PALETTE.indexOf(profile.accentHex);
-
-    const sendLabel = isConnectedHere ? h.cardActionSend : h.cardActionConnectAndSend;
-    const primarySendBtn = createIconButton(
-      isPrimaryHero ? "btn btn-hero-white badge-card-send" : "btn btn-primary badge-card-send",
-      "send",
-      isConnectingHere ? c.statusConnecting : sendLabel,
-      15
-    );
-    primarySendBtn.button.disabled = isBusy;
-    primarySendBtn.button.addEventListener("click", () => {
-      this.handlers.onSelectBadgeAndPush(profile.id);
-    });
-
-    const detailBtn = createIconButton(
-      isPrimaryHero ? "btn btn-sm hero-ghost-btn" : "btn btn-sm",
-      "info",
-      h.cardActionDetail,
-      14
-    );
-    detailBtn.button.addEventListener("click", () => {
-      this.handlers.onOpenDeviceDetail(profile.id);
-    });
-
-    const actionNodes: HTMLElement[] = [primarySendBtn.button, detailBtn.button];
-    if (isConnectedHere) {
-      const disconnectBtn = createIconButton(
-        isPrimaryHero ? "btn btn-sm hero-ghost-btn" : "btn btn-sm",
-        "power",
-        c.btnDisconnect,
-        14
-      );
-      disconnectBtn.button.disabled = state.connectionStatus === "uploading";
-      disconnectBtn.button.addEventListener("click", () => this.handlers.onDisconnect());
-      actionNodes.push(disconnectBtn.button);
+    this.error.hidden = !state.imageLoadError;
+    this.error.textContent = state.imageLoadError ?? "";
+    this.deviceCard.hidden = !showCreate;
+    this.deviceName.textContent = connected
+      ? activeProfile?.nickname ?? (connected.deviceName || "BG02")
+      : this.dict.badges.screenTitle;
+    this.deviceStatus.textContent = connected
+      ? this.dict.badges.statusConnected
+      : available ? link.copy : h.offlineOnly;
+    this.deviceStatus.classList.toggle("home-online", !!connected);
+    this.deviceButton.hidden = !available;
+    this.deviceButton.disabled = !connected && link.busy;
+    this.deviceButton.textContent = connected ? h.btnManage : link.label;
+    if (connected) {
+      this.deviceButton.setAttribute("aria-label", interpolate(h.manageNamed, { name: this.deviceName.textContent }));
+    } else {
+      this.deviceButton.removeAttribute("aria-label");
     }
 
-    const nameRow = createEl("div", { className: "badge-card-name-row" }, [
-      createEl("span", { className: "device-accent-dot", attrs: { "aria-hidden": "true" } }),
-      createEl("span", { className: "badge-card-name", text: profile.nickname }),
-    ]);
+    this.guideHint = showCreate
+      ? { target: this.photo.button, title: h.guidePhotoTitle, copy: h.guidePhotoCopy }
+      : link.busy || link.recovering
+        ? null
+        : { target: this.setupConnect.button, title: h.guideConnectTitle, copy: link.guideCopy };
+  }
 
-    return createEl(
-      "article",
-      {
-        className: isPrimaryHero ? "home-badge-card home-badge-hero" : "home-badge-card",
-        attrs: {
-          "data-accent-index": String(paletteIdx >= 0 ? paletteIdx : 0),
-          "data-connected": String(isConnectedHere),
-        },
-      },
-      [
-        createEl("div", { className: "badge-card-header" }, [
-          createMiniDialAvatar(),
-          createEl("div", { className: "badge-card-info" }, [
-            nameRow,
-            createEl("div", { className: "badge-card-badges" }, [statusBadgeEl, batteryBadgeEl]),
-          ]),
-        ]),
-        createEl("div", { className: "badge-card-actions" }, actionNodes),
-      ]
-    );
+  /** Resolves the display and action for setup, reconnection, and permission recovery. */
+  private resolveConnection(state: AppStateSnapshot): HomeLinkState {
+    const h = this.dict.home;
+    const handlers = this.handlers;
+    const base = { busy: false, recovering: false, guideCopy: h.guideConnectCopy };
+    if (state.reconnectStatus) {
+      const { targetDeviceId, attempt, maxAttempts } = state.reconnectStatus;
+      const name = state.savedDevices.find((profile) => profile.id === targetDeviceId)?.nickname ?? "BG02";
+      return { ...base, recovering: true, label: h.btnCancelReconnect, action: handlers.onCancelReconnect,
+        copy: interpolate(h.statusReconnectingNamed, { name, attempt, max: maxAttempts }) };
+    }
+    if (state.connectionStatus === "connecting" || state.uploadProgress) {
+      const targetId = state.pendingConnectDeviceId ?? state.reconnectPrefs.lastActiveDeviceId;
+      const name = state.savedDevices.find((profile) => profile.id === targetId)?.nickname ?? "BG02";
+      return { ...base, busy: true, label: h.btnConnectBadge, action: handlers.onConnectBadge,
+        copy: interpolate(h.statusConnectingNamed, { name }) };
+    }
+    const failure = state.sendOutcome?.kind === "connect_failed" ? state.sendOutcome : null;
+    if (failure?.connectFailureReason === "permission_unavailable") {
+      const copy = this.dict.send.connectPermissionUnavailableBody;
+      return { ...base, label: h.btnReselectBluetooth, action: handlers.onConnectBadge, copy, guideCopy: copy };
+    }
+    if (failure) {
+      const copy = this.dict.send.connectGattFailedBody;
+      return { ...base, label: h.btnRetryConnect, action: handlers.onRetryFailedConnect, copy, guideCopy: copy };
+    }
+    const saved = state.savedDevices.find((profile) => profile.id === state.reconnectPrefs.lastActiveDeviceId)
+      ?? state.savedDevices[0];
+    return saved
+      ? { ...base, label: h.btnReconnectBadge, action: () => handlers.onReconnectLast(saved.id),
+          copy: interpolate(h.statusDisconnectedNamed, { name: saved.nickname }), guideCopy: h.guideConnectStep }
+      : { ...base, label: h.btnConnectBadge, action: handlers.onConnectBadge, copy: h.guideConnectStep };
   }
 }

@@ -1,7 +1,7 @@
 /**
  * @module i18n/types
  * Strictly typed translation schema preventing missing keys or interpolation typos
- * across supported application locales.
+ * across all 5 application screens and supported locales.
  */
 
 import type { DialErrorKey } from "../constants/ble";
@@ -9,361 +9,473 @@ import type { DialErrorKey } from "../constants/ble";
 /** Supported UI languages exposed by BG02 Studio. */
 export type LocaleCode = "ja" | "en";
 
-/** Header and browser capability notice strings. */
+/** Top chrome header, offline indicator, and global capability notice strings. */
 export interface HeaderTranslations {
-  /** Main application title shown in `<h1>`. */
+  /** Compact application brand title shown in `<header>`. */
   readonly appTitle: string;
-  /** Concise subtitle highlighting privacy-first local Web Bluetooth execution. */
-  readonly appSubtitle: string;
   /** Accessible label for the UI language selector control. */
   readonly languageLabel: string;
-  /** Accessible banner warning shown when `navigator.bluetooth` is unavailable. */
+  /** Accessible warning banner shown when Web Bluetooth is unavailable. */
   readonly unsupportedBleBanner: string;
-  /** PWA offline-cache status badge label when Service Worker is active. */
+  /** PWA offline-cache status badge shown only after scoped precache verification. */
   readonly offlineReadyBadge: string;
-  /** Accessible & visible label for sub-screen `<` Back navigation buttons. */
+  /** Accessible generic back label fallback. */
   readonly btnBack: string;
 }
 
-/** Beginner-friendly Home / Device List screen strings (`activeScreen === "home"`). */
+/** Screen 1: Home / Photo entry strings (`activeScreen === "home"`). */
 export interface HomeTranslations {
-  /** Accessible landmark / heading text for the Home device list screen. */
-  readonly screenHeading: string;
-  /** Onboarding title displayed before any BG02 badge is registered. */
-  readonly welcomeTitle: string;
-  /** Short friendly onboarding tagline below {@link welcomeTitle}. */
-  readonly welcomeLead: string;
-  /** Step 1 instruction for first-time BG02 connection. */
-  readonly welcomeStep1: string;
-  /** Step 2 instruction for first-time BG02 connection. */
-  readonly welcomeStep2: string;
-  /** Step 3 instruction for selecting a badge and uploading. */
-  readonly welcomeStep3: string;
-  /** Primary button opening the Bluetooth picker to pair/connect a badge. */
-  readonly btnConnectNew: string;
-  /** Secondary helper button allowing offline image framing before pairing. */
-  readonly btnOpenOfflineEditor: string;
-  /** Concise helper subtitle below {@link btnOpenOfflineEditor}. */
-  readonly btnOpenOfflineEditorDesc: string;
-  /** Home list entry opening Device Details & Bluetooth Unpair instructions. */
-  readonly btnOpenUnpairGuide: string;
-  /** Concise helper subtitle below {@link btnOpenUnpairGuide}. */
-  readonly btnOpenUnpairGuideDesc: string;
-  /** Badge card CTA label when the unit is disconnected (connect then push). */
-  readonly cardActionConnectAndSend: string;
-  /** Badge card CTA label when the unit is already linked (open push immediately). */
-  readonly cardActionSend: string;
-  /** Secondary action pill opening Device Info & Unpair guide for that badge. */
-  readonly cardActionDetail: string;
-  /** Compact battery warning hint displayed directly on badge cards when `< 20%`. */
-  readonly batteryNoteLow: string;
-  /** Concise footer reminder stating >= 20% and charger-unplugged requirement. */
-  readonly batteryRuleFooter: string;
-  /** Section heading above the list of registered badge cards. */
-  readonly sectionDevices: string;
-  /** Section heading above Home helper tools & unpair guide rows. */
-  readonly sectionMoreActions: string;
-}
-
-/** Device Detail, Hardware Specifications & Bluetooth Unpair Guide screen strings. */
-export interface DeviceDetailTranslations {
-  /** Centered top-bar title for the Device Details screen. */
-  readonly screenTitle: string;
-  /** Card heading summarizing current link state, nickname edit, and auto-reconnect. */
-  readonly sectionStatus: string;
-  /** Card heading summarizing firmware, screen size, and free flash storage. */
-  readonly sectionSpecs: string;
-  /** Card heading explaining browser & OS Bluetooth unpairing steps. */
-  readonly sectionUnpair: string;
-  /** Collapsible `<summary>` label gating advanced BLE toggles and raw communication logs. */
-  readonly sectionDeveloper: string;
-  /** Title shown when the Detail view is opened before any device has been paired. */
-  readonly noDeviceSelectedTitle: string;
-  /** Helpful guidance shown alongside {@link noDeviceSelectedTitle}. */
-  readonly noDeviceSelectedHint: string;
-  /** Button jumping straight into the Image Select & Push screen for the inspected device. */
-  readonly btnSendWithThisDevice: string;
-  /** Small tag indicating displayed telemetry came from saved cache while disconnected. */
-  readonly cachedInfoBadge: string;
-  /** Label for the last connection timestamp readout. */
-  readonly lastSyncedLabel: string;
-  /** Value shown when a badge has not connected cleanly yet. */
-  readonly lastSyncedNever: string;
-  /** Plain-language explanation of Web Bluetooth vs. OS Bluetooth pairing boundaries. */
-  readonly unpairIntro: string;
-  /** Step 1 heading (in-app list removal & `device.forget()`). */
-  readonly unpairStep1Title: string;
-  /** Step 1 explanation paragraph. */
-  readonly unpairStep1Body: string;
-  /** Action button forgetting the inspected badge cleanly. */
-  readonly btnForgetThisBadge: string;
-  /** Feedback notice shown after forgetting a badge when `device.forget()` succeeded (`{name}`). */
-  readonly forgetResultBrowserRevoked: string;
-  /** Feedback notice shown after local removal when the browser lacks `device.forget()` (`{name}`). */
-  readonly forgetResultLocalOnly: string;
-  /** Step 2 heading (browser site permission reset). */
-  readonly unpairStep2Title: string;
-  /** Step 2 explanation paragraph. */
-  readonly unpairStep2Body: string;
-  /** Chrome/Edge Bluetooth site-permissions internal settings path (`chrome://...`). */
-  readonly unpairChromeUrl: string;
-  /** Button copying {@link unpairChromeUrl} cleanly to clipboard. */
-  readonly btnCopyChromeUrl: string;
-  /** Confirmation toast after copying the Chrome Bluetooth settings URL. */
-  readonly copiedChromeUrlToast: string;
-  /** Step 3 heading (OS Bluetooth Settings removal). */
-  readonly unpairStep3Title: string;
-  /** Windows unpairing instructions line. */
-  readonly unpairStep3Windows: string;
-  /** Android unpairing instructions line. */
-  readonly unpairStep3Android: string;
-  /** macOS / iOS / Bluefy unpairing instructions line. */
-  readonly unpairStep3Apple: string;
-}
-
-/** BLE connection, telemetry readout, and link-mode checkbox strings. */
-export interface ConnectionTranslations {
-  /** Section heading (`<h2>`) for Panel 1. */
-  readonly heading: string;
-  /** Button opening Web Bluetooth device chooser. */
-  readonly btnConnect: string;
-  /** Secondary button switching to a different BLE device when a cached one exists. */
-  readonly btnChangeDevice: string;
-  /** Button reconnecting directly to the previously selected BG02 device. */
-  readonly btnReconnect: string;
-  /** Button gracefully disconnecting the GATT link. */
-  readonly btnDisconnect: string;
-  /** Button re-querying Dial Info (`0x20/0x02`), Free Storage (`0x20/0x04`), Battery, and DIS. */
-  readonly btnRefreshTelemetry: string;
-  /** Checkbox toggling `acceptAllDevices: true` scan filter mode. */
-  readonly optAcceptAllDevices: string;
-  /** Checkbox toggling `writeValueWithoutResponse` priority pacing mode. */
-  readonly optPreferWriteWithoutResponse: string;
-  /** Status badge label when disconnected. */
-  readonly statusDisconnected: string;
-  /** Status badge label while connecting and shaking hands. */
-  readonly statusConnecting: string;
-  /** Status badge label template while running automatic disconnect retries (`{attempt}`, `{max}`). */
-  readonly statusReconnecting: string;
-  /** Status badge label when GATT + `Lqm2.r` pairing succeeded. */
-  readonly statusConnected: string;
-  /** Status badge label during active WatchTheme3 upload. */
-  readonly statusUploading: string;
-  /** Status badge label when the last connection/upload ended in an error. */
-  readonly statusError: string;
-  /** Multi-device switcher heading above saved badge chips. */
-  readonly deviceShelfHeading: string;
-  /** Hint shown in the multi-device shelf before any badge has been saved. */
-  readonly deviceEmptyHint: string;
-  /** Button pairing and registering an additional BG02 badge. */
-  readonly btnAddDevice: string;
-  /** Button canceling an active automatic reconnect sequence. */
+  /** Headline shown before a badge is connected. */
+  readonly setupHeading: string;
+  /** Opens the photo tools without a Bluetooth connection. */
+  readonly btnOffline: string;
+  /** Loads the bundled sample photo. */
+  readonly btnSample: string;
+  /** Opens settings for the displayed badge. */
+  readonly btnManage: string;
+  /** Accessible label for opening a named badge's settings. */
+  readonly manageNamed: string;
+  /** Cancels the active reconnect loop from Home. */
   readonly btnCancelReconnect: string;
-  /** Checkbox enabling exponential-backoff auto-retry after unexpected drops. */
-  readonly optAutoRetryOnDrop: string;
-  /** Checkbox enabling startup auto-connect to the last permitted badge. */
-  readonly optAutoConnectOnStartup: string;
-  /** Chip tag indicating a saved badge has a live cached handle (`Ready`). */
-  readonly deviceReadyBadge: string;
-  /** Chip tag indicating a saved badge needs re-selection via chooser if unavailable via `getDevices()`. */
-  readonly devicePairRequiredBadge: string;
-  /** Accessible button label opening the inline badge nickname editor. */
-  readonly btnRenameDevice: string;
-  /** Confirm button saving an edited badge nickname. */
-  readonly btnSaveNickname: string;
-  /** Cancel button closing the inline badge nickname editor. */
-  readonly btnCancelRename: string;
-  /** Accessible button label removing a badge profile from local storage. */
-  readonly btnForgetDevice: string;
-  /** Placeholder text inside the inline badge nickname field. */
-  readonly renamePlaceholder: string;
-  /** Banner text shown during auto-reconnect with `{name}`, `{attempt}`, `{max}`. */
-  readonly reconnectingNotice: string;
-  /** Log/notice shown when a saved badge lacks a live handle and falls back to browser picker. */
-  readonly deviceNeedsRepairNotice: string;
-  /** Default placeholder subtitle in the hero card before connecting a badge. */
-  readonly heroDisconnectedSubtitle: string;
-  /** Accordion title for the saved badges manager and auto-reconnect settings. */
-  readonly funcBadgesTitle: string;
-  /** Accordion title for detailed hardware telemetry, BLE options, and debug logs. */
-  readonly funcLogsTitle: string;
-  /** Telemetry row label for Battery percentage. */
-  readonly labelBattery: string;
-  /** Short low-battery warning tag displayed in the connection bar when <= 25%. */
-  readonly batteryLowWarning: string;
-  /** Telemetry row label for firmware/hardware revisions. */
-  readonly labelFirmwareHardware: string;
-  /** Telemetry row label for display dimensions, shape, and encoding. */
-  readonly labelDisplaySpec: string;
-  /** Telemetry row label for available flash storage bytes. */
-  readonly labelFreeStorage: string;
-  /** Telemetry row label for manufacturer / MCU / customer strings. */
-  readonly labelModelInfo: string;
-  /** Fallback text before device telemetry has been read. */
-  readonly valueNotRead: string;
-  /** Notice displayed when `0x20/0x04` timed out on firmware that delays reporting. */
-  readonly freeStorageTimedOut: string;
-  /** Summary label for the bottom collapsible developer & diagnostics drawer. */
-  readonly advancedDrawerSummary: string;
-  /** Short section label above Function accordion rows. */
-  readonly sectionFunctionHeading: string;
+  /** Short explanation when the browser supports editing only. */
+  readonly offlineOnly: string;
+  /** First-visit dialog title for initial pairing. */
+  readonly guideConnectTitle: string;
+  /** First-visit instructions for selecting a badge. */
+  readonly guideConnectCopy: string;
+  /** First-visit dialog title for choosing a photo. */
+  readonly guidePhotoTitle: string;
+  /** First-visit instructions for choosing a photo. */
+  readonly guidePhotoCopy: string;
+  /** Primary page `<h1>` headline ("バッジに写真を送る"). */
+  readonly heading: string;
+  /** Short 1-line description of what this screen does. */
+  readonly lead: string;
+  /** Accessible caption describing the empty showcase round-badge illustration. */
+  readonly sampleCaption: string;
+  /** Label above small current-draft circular thumbnail card when a draft exists. */
+  readonly draftCardLabel: string;
+  /** Default primary CTA before an image/text draft exists ("写真を選ぶ"). */
+  readonly btnPickPhoto: string;
+  /** Primary CTA when an active draft already exists ("編集を続ける"). */
+  readonly btnContinueEdit: string;
+  /** Secondary link/button picking a replacement photo while keeping a draft option. */
+  readonly btnReplacePhoto: string;
+  /** Optional text-only entry link ("文字だけで作る"). */
+  readonly btnTextOnly: string;
+  /** Helper navigation button opening Screen 4 My Badges ("マイバッジ"). */
+  readonly btnMyBadges: string;
+  /** Compact badge count summary shown inside My Badges row (`{count}`). */
+  readonly registeredCountBadge: string;
+  /** Concise first-time pairing instruction displayed on Home before connecting a badge. */
+  readonly guideConnectStep: string;
+  /** Prominent action opening the Web Bluetooth picker directly from Home. */
+  readonly btnConnectBadge: string;
+  /** Compact action retrying connection to a remembered badge from Home. */
+  readonly btnReconnectBadge: string;
+  /** Connected badge status label on Home (`{name}`). */
+  readonly statusConnectedNamed: string;
+  /** Connecting status label on Home (`{name}`). */
+  readonly statusConnectingNamed: string;
+  /** Reconnecting progress label on Home (`{name}`, `{attempt}`, `{max}`). */
+  readonly statusReconnectingNamed: string;
+  /** Disconnected remembered badge label on Home (`{name}`). */
+  readonly statusDisconnectedNamed: string;
+  /** Recovery retry button rendered inline inside Home connection failure card. */
+  readonly btnRetryConnect: string;
+  /** Recovery button reopening Bluetooth picker from Home connection failure card. */
+  readonly btnReselectBluetooth: string;
+  /** Error alert shown when decoding a chosen file fails while an existing draft is kept intact. */
+  readonly imageLoadErrorKeepDraft: string;
+  /** Error alert shown when decoding a chosen file fails with no prior draft loaded. */
+  readonly imageLoadErrorEmpty: string;
 }
 
-/** Circular image editor, transform controls, optional text overlay, and upload strings. */
+/** Screen 2: Adjust & Crop Photo strings (`activeScreen === "editor"`). */
 export interface EditorTranslations {
-  /** Section heading (`<h2>`) for Panel 2. */
-  readonly heading: string;
-  /** Instructional prompt inside or above the file drop area. */
-  readonly dropzonePrompt: string;
-  /** Accessible file picker button text. */
-  readonly btnSelectFile: string;
-  /** Camera capture tile button text (mobile camera or image picker). */
-  readonly btnTakePhoto: string;
-  /** Short section label above Select Image pastel tiles. */
-  readonly sectionSelectImage: string;
-  /** Compact crop size label directly below preview circle (`{kb}`). */
-  readonly cropSizeSummary: string;
-  /** Compact device remaining storage line below Upload pill (`{space}`). */
-  readonly remainingSpaceSummary: string;
-  /** Short Refresh pill button beside remaining storage readout. */
-  readonly btnRefreshShort: string;
-  /** Accordion title for fine position, rotation, and text settings. */
-  readonly funcFineEditTitle: string;
-  /** Accordion title for JPEG optimization, SOF0 check, and local export. */
-  readonly funcExportTitle: string;
-  /** Inviting tap target shown over an empty circular canvas before picking a photo. */
-  readonly emptyCanvasTapLabel: string;
-  /** Compact quick-action bar label choosing Fill/Cover fit. */
-  readonly quickBtnCover: string;
-  /** Compact quick-action bar label choosing Fit/Contain. */
-  readonly quickBtnContain: string;
-  /** Compact quick-action bar label rotating +90°. */
-  readonly quickBtnRotate: string;
-  /** Compact quick-action bar label toggling the text drawer. */
-  readonly quickBtnText: string;
-  /** Compact quick-action bar label resetting framing. */
-  readonly quickBtnReset: string;
-  /** Loaded filename readout template containing `{name}` and `{width}`/`{height}`. */
-  readonly fileLoadedSummary: string;
-  /** Placeholder status before the user selects an image file. */
-  readonly noImageLoaded: string;
-  /** Accessible description for the interactive circular preview `<canvas>`. */
+  /** Centered top-bar `<h1/h2>` screen title ("写真を整える"). */
+  readonly screenTitle: string;
+  /** Back button label returning cleanly to Home. */
+  readonly btnBackHome: string;
+  /** Placeholder prompt overlaid gently on empty circular preview. */
+  readonly emptyCirclePrompt: string;
+  /** Accessible `aria-label` describing interactive circular preview canvas. */
   readonly previewCanvasAriaLabel: string;
-  /** Short hint below the preview explaining drag pan & pinch/wheel zoom. */
+  /** Concise interaction guidance below circular preview. */
   readonly canvasInteractionHint: string;
-  /** Fieldset/subheading for pan, zoom, rotate, and background controls. */
-  readonly groupAlignment: string;
-  /** Quick button fitting the image to fill the entire frame ("Cover"). */
-  readonly btnFitCover: string;
-  /** Quick button fitting the entire image inside the frame ("Contain"). */
-  readonly btnFitContain: string;
-  /** Quick button rotating counter-clockwise by 90 degrees. */
-  readonly btnRotateLeft: string;
-  /** Quick button rotating clockwise by 90 degrees. */
-  readonly btnRotateRight: string;
-  /** Button restoring default center/scale/zero-rotation alignment. */
-  readonly btnResetAlign: string;
-  /** Slider label for horizontal X pan offset (`px`). */
-  readonly labelOffsetX: string;
-  /** Slider label for vertical Y pan offset (`px`). */
-  readonly labelOffsetY: string;
-  /** Slider label for relative scale multiplier. */
-  readonly labelScale: string;
-  /** Slider label for fine rotation (`-180°` .. `+180°`). */
-  readonly labelRotation: string;
-  /** Color input label for canvas fill behind margins / transparent PNGs. */
-  readonly labelBgColor: string;
-  /** Disclosure summary / heading for optional text overlay. */
-  readonly groupTextOverlay: string;
-  /** Checkbox enabling or disabling the text overlay layer. */
-  readonly labelEnableText: string;
-  /** Explains why baking text cleanly into images avoids firmware font bugs. */
-  readonly textMotivationTip: string;
-  /** Label for multi-line overlay `<textarea>`. */
+  /** Status pill shown while decoding user photo. */
+  readonly loadingPhotoStatus: string;
+  /** Status pill shown while encoding background JPEG draft. */
+  readonly encodingDraftStatus: string;
+  /** Compact action changing or selecting photo. */
+  readonly btnChangePhoto: string;
+  /** Compact action rotating clockwise by 90 degrees. */
+  readonly btnRotate90: string;
+  /** Compact action opening or focusing badge text editor. */
+  readonly btnAddText: string;
+  /** Compact action reopening the inline text editor when text already exists. */
+  readonly btnEditText: string;
+  /** Compact toggle closing/collapsing inline text card once added. */
+  readonly btnHideText: string;
+  /** Compact reset button shown dynamically whenever edits differ from default framing. */
+  readonly btnResetAdjust: string;
+  /** Zoom-in toolbar action label. */
+  readonly btnZoomIn: string;
+  /** Zoom-out toolbar action label. */
+  readonly btnZoomOut: string;
+  /** Pan-left control label. */
+  readonly btnMoveLeft: string;
+  /** Pan-right control label. */
+  readonly btnMoveRight: string;
+  /** Pan-up control label. */
+  readonly btnMoveUp: string;
+  /** Pan-down control label. */
+  readonly btnMoveDown: string;
+  /** Primary CTA advancing to Screen 3 ("送信へ"). */
+  readonly btnNextSend: string;
+  /** Secondary CTA exporting composed JPEG locally ("画像を保存"). */
+  readonly btnSaveJpeg: string;
+  /** Helper note displayed while both photo and valid text are empty. */
+  readonly needContentHint: string;
+  /** Heading for inline badge text input card (shown only when enabled). */
+  readonly textSectionTitle: string;
+  /** Input placeholder example inside multi-line text area. */
+  readonly textPlaceholder: string;
+  /** Label for text content textarea. */
   readonly labelOverlayText: string;
-  /** Label for font-family selector. */
-  readonly labelFontFamily: string;
-  /** Label for text font size slider (`px`). */
-  readonly labelFontSize: string;
-  /** Color input label for text fill color. */
-  readonly labelTextColor: string;
-  /** Color input label for outline stroke color. */
-  readonly labelStrokeColor: string;
-  /** Slider label for outline stroke thickness (`px`). */
-  readonly labelStrokeWidth: string;
-  /** Slider label for vertical text position offset (`px`). */
-  readonly labelTextOffsetY: string;
-  /** Consumer quick-placement label (`Top` / `Center` / `Bottom`). */
+  /** Action removing text overlay cleanly. */
+  readonly btnRemoveText: string;
+  /** Collapsed disclosure summary for text font/color/outline options. */
+  readonly textStyleDetailsSummary: string;
+  /** Label above vertical text position preset buttons (`上`/`中`/`下`). */
   readonly labelTextPositionPreset: string;
-  /** Top placement preset button label. */
+  /** Upper third circular placement preset label. */
   readonly posTop: string;
-  /** Center placement preset button label. */
+  /** Middle horizontal placement preset label. */
   readonly posCenter: string;
-  /** Bottom placement preset button label. */
+  /** Lower third circular placement preset label. */
   readonly posBottom: string;
-  /** Fieldset/subheading for JPEG encoding budget & SOF0 inspection. */
-  readonly groupExport: string;
-  /** Checkbox toggling automatic <= 15 KiB quality search. */
+  /** Collapsed disclosure summary for sliders & color & quality controls ("細かく調整"). */
+  readonly fineAdjustSummary: string;
+  /** Cover framing preset label filling the entire circle. */
+  readonly btnFitCover: string;
+  /** Contain framing preset label showing full rectangular image inside circle. */
+  readonly btnFitContain: string;
+  /** Counter-clockwise 90-degree rotation button label. */
+  readonly btnRotateLeft: string;
+  /** Clockwise 90-degree rotation button label. */
+  readonly btnRotateRight: string;
+  /** Horizontal offset slider label. */
+  readonly labelOffsetX: string;
+  /** Vertical offset slider label. */
+  readonly labelOffsetY: string;
+  /** Zoom scale slider label. */
+  readonly labelScale: string;
+  /** Free-angle rotation slider label. */
+  readonly labelRotation: string;
+  /** Background matte color input label. */
+  readonly labelBgColor: string;
+  /** Font family selector label. */
+  readonly labelFontFamily: string;
+  /** Font size slider label. */
+  readonly labelFontSize: string;
+  /** Text fill color picker label. */
+  readonly labelTextColor: string;
+  /** Text outline stroke color picker label. */
+  readonly labelStrokeColor: string;
+  /** Text outline stroke width slider label. */
+  readonly labelStrokeWidth: string;
+  /** Text vertical fine-offset slider label. */
+  readonly labelTextOffsetY: string;
+  /** Toggle label enabling automatic JPEG quality targeting. */
   readonly labelAutoOptimize: string;
-  /** Slider label for manual JPEG quality (`0.10` .. `1.00`). */
+  /** Slider label for manual JPEG quality override. */
   readonly labelManualQuality: string;
-  /** Output byte summary template with `{bytes}` and `{quality}`. */
+  /** Collapsed developer/output inspection disclosure ("ファイル形式・サイズの詳細"). */
+  readonly outputDetailsSummary: string;
+  /** Summary line displaying generated byte length and active quality (`{bytes}`, `{quality}`). */
   readonly outputSizeSummary: string;
-  /** Passed validation banner template with `{width}` and `{height}`. */
+  /** Positive badge validation label confirming Baseline SOF0 `240x240` JPEG output. */
   readonly validationSof0Ok: string;
-  /** Soft warning template when output exceeds 15 KiB (`{bytes}`). */
+  /** Soft warning shown when encoded JPEG size exceeds recommended badge target. */
   readonly warnExceedsTarget: string;
-  /** Error text when encoder or input yields Progressive JPEG (`SOF2`). */
+  /** Validation error shown if Progressive SOF2 encoding is detected. */
   readonly errorProgressiveSof2: string;
-  /** Error text when encoded JPEG fails `SOI`/`SOF0` structural inspection. */
+  /** Validation error shown if JPEG markers are malformed. */
   readonly errorInvalidJpeg: string;
-  /** Error text when JPEG dimensions differ from device-reported `width x height`. */
+  /** Validation error shown when dimensions deviate from `240x240` (`{width}`, `{height}`). */
   readonly errorDimensionMismatch: string;
-  /** Secondary button exporting the composed `240x240` Baseline JPEG locally. */
-  readonly btnDownloadJpeg: string;
-  /** Primary action button initiating WatchTheme3 BLE transfer. */
-  readonly btnUpload: string;
-  /** Helpful caption displayed under the Upload button while disconnected explaining auto-reconnect. */
-  readonly connectFirstHint: string;
-  /** Top-bar title shown on the dedicated Image Select & Send screen. */
-  readonly pushScreenTitle: string;
-  /** Top-bar badge text shown when previewing/editing images without an active connection. */
-  readonly pushStatusOfflineBadge: string;
-  /** Top-bar badge text when linked without battery percentage (`{name}`). */
-  readonly pushStatusConnectedBadge: string;
-  /** Top-bar badge text showing badge name & battery percentage (`{name}`, `{battery}`). */
-  readonly pushStatusConnectedBatBadge: string;
-  /** Concise condition note displayed near Upload button (`>= 20%`, charger unplugged). */
-  readonly pushRuleReminder: string;
-  /** Active button label template shown during upload (`{percent}`, `{sent}`, `{total}`). */
-  readonly btnUploading: string;
-  /** Button label shown while preparing, reconnecting, or queuing a resend before progress arrives. */
-  readonly btnPreparingUpload: string;
-  /** Log / status announcement shown when automatically resending after a stall (`{attempt}`, `{max}`). */
-  readonly uploadRetrying: string;
-  /** Completion alert template containing `{bytes}`, `{seconds}`, `{checksum}`. */
-  readonly uploadSuccess: string;
-  /** Error banner prefix shown when upload or decode fails (`{reason}`). */
-  readonly actionError: string;
 }
 
-/** Communication log panel strings. */
+/** Screen 3: Send to Badge strings (`activeScreen === "send"`). */
+export interface SendTranslations {
+  /** Centered screen heading ("バッジに送る"). */
+  readonly screenTitle: string;
+  /** Back link returning to Editor ("編集に戻る"). */
+  readonly btnBackEdit: string;
+  /** Small image thumbnail card heading. */
+  readonly imageCardHeading: string;
+  /** Destination card heading ("送り先"). */
+  readonly targetCardHeading: string;
+  /** Destination prompt shown when `selectedSendTargetId === null`. */
+  readonly stateUnselectedTitle: string;
+  /** Brief name shown in the destination row while no badge is selected. */
+  readonly unselectedTargetLabel: string;
+  /** Primary button opening Web Bluetooth chooser when no destination selected. */
+  readonly btnChooseTarget: string;
+  /** Secondary link managing saved badges ("マイバッジ"). */
+  readonly btnManageBadges: string;
+  /** Button switching to another device via chooser ("別のバッジを選ぶ"). */
+  readonly btnChooseAnotherBadge: string;
+  /** Connecting state headline (`{name}`). */
+  readonly stateConnectingTitle: string;
+  /** Reconnecting state headline (`{name}`). */
+  readonly stateReconnectingTitle: string;
+  /** Concise first-time step guidance shown when no badge has been paired yet. */
+  readonly firstConnectStepHint: string;
+  /** Helper reassurance explaining picker cancel preserves existing link. */
+  readonly cancelPickerNote: string;
+  /** Connected-ready badge status (`{name}`). */
+  readonly stateConnectedTitle: string;
+  /** Saved-but-disconnected badge status (`{name}`). */
+  readonly stateDisconnectedTargetTitle: string;
+  /** Warning note shown when another badge `{other}` is linked while target is `{target}`. */
+  readonly otherBadgeLinkedNote: string;
+  /** Alert notice shown when browser history navigation invalidated previous target. */
+  readonly targetDriftNotice: string;
+  /** Concise pre-upload overwrite disclosure placed right above the Send button. */
+  readonly replaceCustomSlotNote: string;
+  /** Inline button expanding/toggling destination badge switcher options. */
+  readonly btnChangeTarget: string;
+  /** Preparation status headline shown while async JPEG encode runs before BLE writes. */
+  readonly statePreparingTitle: string;
+  /** Disabled button label while encoding JPEG before starting BLE transmission. */
+  readonly btnPreparingSend: string;
+  /** Alert title shown when async preparation aborted due to destination or draft change. */
+  readonly statePrepareAbortedTitle: string;
+  /** Explanatory copy clarifying zero bytes were written after preparation drift. */
+  readonly statePrepareAbortedBody: string;
+  /** Connection failure alert headline (`{name}`). */
+  readonly stateConnectFailedTitle: string;
+  /** Connection failure explanation when cached browser permission is unavailable. */
+  readonly connectPermissionUnavailableBody: string;
+  /** Recovery button opening Web Bluetooth chooser to re-grant permission. */
+  readonly btnReselectBluetooth: string;
+  /** Connection failure explanation when GATT link/handshake fails (power/distance). */
+  readonly connectGattFailedBody: string;
+  /** Recovery button retrying connection after checking badge power and distance. */
+  readonly btnRetryPowerRange: string;
+  /** Primary CTA when selected target `{name}` is disconnected. */
+  readonly btnConnectTarget: string;
+  /** Primary CTA when selected target `{name}` is connected & verified. */
+  readonly btnSendTarget: string;
+  /** Active transfer headline (`{name}`, `{percent}`). */
+  readonly stateSendingProgress: string;
+  /** Transfer chunk count detail (`{sent}`, `{total}`, `{current}`, `{chunks}`). */
+  readonly stateSendingDetail: string;
+  /** Automatic retry status line (`{attempt}`, `{max}`). */
+  readonly stateRetryingNotice: string;
+  /** Post-chunk completion wait headline ("バッジからの完了応答を待っています"). */
+  readonly stateAwaitingFinishTitle: string;
+  /** Success headline (`{name}`). */
+  readonly stateCompletedTitle: string;
+  /** Success guidance asking user to verify the badge screen. */
+  readonly stateCompletedHint: string;
+  /** Primary CTA after completion ("ホームへ"). */
+  readonly btnDoneHome: string;
+  /** Unexpected drop error headline (`{name}`). */
+  readonly stateLinkDroppedTitle: string;
+  /** Timeout error headline ("完了を確認できませんでした"). */
+  readonly stateTimeoutTitle: string;
+  /** Helpful advice after completion timeout or disconnect. */
+  readonly stateTimeoutHint: string;
+  /** Reconnect & retry CTA preserving exact frozen image bytes. */
+  readonly btnReconnectAndRetry: string;
+  /** Same-connection retry CTA preserving exact frozen image bytes. */
+  readonly btnRetrySameImage: string;
+  /** Environment unsupported headline ("この環境ではバッジに接続できません"). */
+  readonly unsupportedEnvTitle: string;
+  /** Device unsupported headline ("このバッジには送信できません"). */
+  readonly unsupportedDeviceTitle: string;
+  /** Reason body when badge uses non-JPEG algorithm (`{algo}`). */
+  readonly unsupportedAlgorithmReason: string;
+  /** Reason body when screen dimensions or format could not be verified. */
+  readonly unsupportedUnverifiedReason: string;
+  /** Native `<details>` summary revealing supported browser/OS list. */
+  readonly viewSupportedEnvSummary: string;
+  /** Supported OS & browser guidance text. */
+  readonly supportedEnvBody: string;
+  /** Refusal headline when badge free flash storage is insufficient. */
+  readonly refusalStorageTitle: string;
+  /** Refusal headline when battery `< 20%`. */
+  readonly refusalBatteryTitle: string;
+  /** Refusal headline when charger is plugged in (code `4`). */
+  readonly refusalChargingTitle: string;
+  /** Advice accompanying capacity shortage refusal. */
+  readonly refusalStorageAdvice: string;
+  /** Advice accompanying low battery or charging refusal. */
+  readonly refusalPowerAdvice: string;
+  /** Battery readout label on Send screen (`{percent}`). */
+  readonly labelBattery: string;
+  /** Free flash storage readout label on Send screen (`{value}`). */
+  readonly labelFreeStorage: string;
+  /** Fallback string when telemetry value has not yet been verified from hardware. */
+  readonly valueUnverified: string;
+  /** Button saving JPEG locally from fallback state. */
+  readonly btnSaveJpegFallback: string;
+  /** Link/button selecting or confirming a saved radio option cleanly. */
+  readonly savedTargetsHeading: string;
+}
+
+/** Screen 4: My Badges list strings (`activeScreen === "badges"`). */
+export interface BadgesTranslations {
+  /** Centered screen heading ("マイバッジ"). */
+  readonly screenTitle: string;
+  /** Back button when opened from Home. */
+  readonly btnBackHome: string;
+  /** Back button when opened from Send screen. */
+  readonly btnBackSend: string;
+  /** Single-sentence empty state before any badge is saved. */
+  readonly emptyGuide: string;
+  /** Concise preparation step hint rendered alongside Add badge. */
+  readonly firstConnectStepHint: string;
+  /** Recovery button retrying after GATT failure while adding a badge. */
+  readonly btnRetryAdd: string;
+  /** Primary CTA opening Web Bluetooth chooser to pair a new badge. */
+  readonly btnAddBadge: string;
+  /** Connected badge status label. */
+  readonly statusConnected: string;
+  /** Connecting status label. */
+  readonly statusConnecting: string;
+  /** Reconnecting status label (`{attempt}`, `{max}`). */
+  readonly statusReconnecting: string;
+  /** Disconnected badge status label. */
+  readonly statusDisconnected: string;
+  /** Prefix indicating cached telemetry from a prior session ("前回取得"). */
+  readonly prefixLastFetched: string;
+  /** Battery label when unknown/unread ("未確認"). */
+  readonly batteryUnconfirmed: string;
+  /** Battery readout (`{percent}`). */
+  readonly batteryPercent: string;
+  /** Low battery compact indicator (`< 20%`). */
+  readonly batteryLowHint: string;
+}
+
+/** Screen 5: Badge Details & Diagnostics strings (`activeScreen === "device-detail"`). */
+export interface DeviceDetailTranslations {
+  /** Centered screen heading ("バッジ詳細"). */
+  readonly screenTitle: string;
+  /** Back button returning to Screen 4 ("マイバッジ"). */
+  readonly btnBackBadges: string;
+  /** Fallback notice when focused device was removed or missing. */
+  readonly noDeviceSelected: string;
+  /** Top status & rename card heading. */
+  readonly sectionBasic: string;
+  /** Form label above the badge nickname input field. */
+  readonly labelNickname: string;
+  /** Placeholder text shown inside empty badge nickname input. */
+  readonly placeholderNickname: string;
+  /** Save button committing a custom badge nickname. */
+  readonly btnSaveNickname: string;
+  /** Inline confirmation text shown after saving a badge nickname. */
+  readonly nicknameSavedNotice: string;
+  /** Primary action connecting to the currently viewed saved badge. */
+  readonly btnConnect: string;
+  /** Secondary action disconnecting the active badge session cleanly. */
+  readonly btnDisconnect: string;
+  /** Shortcut CTA navigating directly to Screen 3 with this badge pre-selected. */
+  readonly btnSendWithBadge: string;
+  /** Section heading for automatic reconnection toggle checkboxes. */
+  readonly sectionAutoReconnect: string;
+  /** Checkbox label enabling exponential-backoff retry after unexpected drops. */
+  readonly optAutoRetryOnDrop: string;
+  /** Checkbox label enabling silent startup reconnection via `navigator.bluetooth.getDevices()`. */
+  readonly optAutoConnectOnStartup: string;
+  /** Section heading introducing badge removal from local app registry. */
+  readonly sectionUnregister: string;
+  /** Button revealing explicit badge-named confirmation dialog. */
+  readonly btnUnregisterOpen: string;
+  /** Confirmation prompt interpolating the target badge `{name}` before removal. */
+  readonly unregisterConfirmQuestion: string;
+  /** Destructive confirm button committing removal. */
+  readonly btnUnregisterConfirm: string;
+  /** Cancel button dismissing the unregister confirmation panel. */
+  readonly btnUnregisterCancel: string;
+  /** Separate post-forget result notices (`{name}`). */
+  readonly removedFromAppNotice: string;
+  /** Notice shown when Chrome/Edge `device.forget()` also revoked browser permission. */
+  readonly browserPermissionRevokedNotice: string;
+  /** Honest notice explaining OS/browser pairing remains when `device.forget()` is unsupported or declined. */
+  readonly browserPermissionManualNotice: string;
+  /** Collapsed Diagnostics & Unpair Guide disclosure ("接続の診断"). */
+  readonly diagnosticsSummary: string;
+  /** Button triggering manual refresh of GATT battery, storage, and dial info. */
+  readonly btnRefreshTelemetry: string;
+  /** Definition-list term for firmware/hardware revisions. */
+  readonly labelFirmwareHardware: string;
+  /** Definition-list term for reported display geometry & WatchTheme algorithm. */
+  readonly labelDisplaySpec: string;
+  /** Definition-list term for reported remaining flash storage. */
+  readonly labelFreeStorage: string;
+  /** Definition-list term for MCH/Main/Customer hardware identifiers. */
+  readonly labelModelInfo: string;
+  /** Definition-list term for timestamp of last telemetry synchronization. */
+  readonly labelLastSynced: string;
+  /** Definition-list term for fixed BG02 custom watchface slot (`5538`). */
+  readonly labelCustomSlot: string;
+  /** Value identifying the fixed custom dial slot (`5538`). */
+  readonly valueCustomSlotFixed: string;
+  /** Definition-list term for most recent upload byte count, duration, and checksum. */
+  readonly labelLastTransfer: string;
+  /** Diagnostic telemetry summary of last completed upload (`{bytes}`, `{seconds}`, `{checksum}`). */
+  readonly valueLastTransferMeta: string;
+  /** Placeholder value shown before any telemetry sync has succeeded. */
+  readonly valueNotSynced: string;
+  /** Placeholder value shown for unverified hardware fields. */
+  readonly valueUnverified: string;
+  /** Diagnostic fallback message when `0x20/0x04` storage query times out. */
+  readonly freeStorageTimedOut: string;
+  /** Subsection heading for advanced Web Bluetooth transport options. */
+  readonly sectionBleOptions: string;
+  /** Toggle enabling unfiltered `acceptAllDevices: true` scanning fallback. */
+  readonly optAcceptAllDevices: string;
+  /** Toggle enabling `writeValueWithoutResponse` pacing where supported. */
+  readonly optPreferWriteWithoutResponse: string;
+  /** Subsection heading introducing browser & OS unpairing instructions. */
+  readonly sectionUnpairGuide: string;
+  /** Reference internal Chrome URL string shown in unpair instructions. */
+  readonly unpairChromeUrl: string;
+  /** Button copying `chrome://bluetooth-internals/#devices` to clipboard. */
+  readonly btnCopyChromeUrl: string;
+  /** Feedback label briefly shown after copying the internal Chrome URL. */
+  readonly copiedChromeUrlToast: string;
+  /** Instruction paragraph explaining Chrome/Edge browser device permission cleanup. */
+  readonly unpairStepBrowserBody: string;
+  /** OS-specific Bluetooth removal guide for Windows. */
+  readonly unpairStepWindows: string;
+  /** OS-specific Bluetooth removal guide for Android. */
+  readonly unpairStepAndroid: string;
+  /** OS-specific Bluetooth removal guide for macOS / iPadOS. */
+  readonly unpairStepApple: string;
+}
+
+/** Communication log panel strings inside Diagnostics disclosure. */
 export interface LogTranslations {
-  /** Section heading (`<h2>`) for Panel 3. */
+  /** Heading inside Diagnostics (`<h3>`). */
   readonly heading: string;
-  /** Button copying all chronological log lines to clipboard. */
+  /** Button copying all diagnostic log entries to clipboard. */
   readonly btnCopy: string;
-  /** Button clearing the in-memory log console. */
+  /** Button clearing retained in-memory log entries. */
   readonly btnClear: string;
-  /** Ephemeral confirmation announcement after copying logs. */
+  /** Confirmation feedback displayed after copying logs. */
   readonly copiedToast: string;
-  /** Empty-state notice inside log viewer. */
+  /** Empty placeholder text shown before any BLE commands have executed. */
   readonly emptyState: string;
 }
 
-/** Footer notes and localized WatchTheme3 firmware error descriptions. */
+/** Footer copy and localized WatchTheme3 firmware error descriptions. */
 export interface FooterTranslations {
-  /** Privacy assurance statement displayed in `<footer>`. */
+  /** Accurate local-processing privacy statement. */
   readonly privacyGuarantee: string;
   /** Localized descriptions mapped cleanly from BG02 numeric failure codes (`1..9`). */
   readonly dialErrors: Readonly<Record<DialErrorKey, string>>;
@@ -373,18 +485,20 @@ export interface FooterTranslations {
 
 /** Complete translation schema enforced identically across all locale dictionaries. */
 export interface TranslationSchema {
-  /** Header copy and browser notices. */
+  /** Top navigation chrome & capability banner strings. */
   readonly header: HeaderTranslations;
-  /** Home / Top Device List screen copy. */
+  /** Screen 1 (Home) strings. */
   readonly home: HomeTranslations;
-  /** Device Details & Bluetooth Unpair Guide copy. */
-  readonly detail: DeviceDetailTranslations;
-  /** BLE connection and telemetry readout copy. */
-  readonly connection: ConnectionTranslations;
-  /** Circular badge compositor and upload copy. */
+  /** Screen 2 (Photo Editor) strings. */
   readonly editor: EditorTranslations;
-  /** Communication log controls and announcements. */
+  /** Screen 3 (Send to Badge) strings. */
+  readonly send: SendTranslations;
+  /** Screen 4 (My Badges) strings. */
+  readonly badges: BadgesTranslations;
+  /** Screen 5 (Badge Details & Diagnostics) strings. */
+  readonly detail: DeviceDetailTranslations;
+  /** Communication log controls & empty state strings. */
   readonly logs: LogTranslations;
-  /** Footer guarantees and localized firmware error mappings. */
+  /** Footer privacy notice & WatchTheme3 numeric error messages. */
   readonly footer: FooterTranslations;
 }

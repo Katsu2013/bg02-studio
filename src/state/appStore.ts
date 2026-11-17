@@ -1,10 +1,11 @@
 /**
  * @module state/appStore
- * Unidirectional observable state container managing BLE session status,
- * telemetry metadata, badge composition parameters, encoded JPEG output, and logs.
+ * Centralized reactive store holding the 5-screen navigation flow, BLE session state,
+ * non-leaking Send target state, immutable retry snapshots, draft edits, and diagnostics.
  */
 
 import type {
+  Bg02ConnectFailureReason,
   BleConnectionStatus,
   BleLogEntry,
   ConnectedDeviceMetadata,
@@ -12,6 +13,7 @@ import type {
   ReconnectStatus,
   UploadProgress,
 } from "../ble/types";
+import type { DialErrorKey } from "../constants/ble";
 import {
   createDefaultEncodingConfig,
   createDefaultTextOverlay,
@@ -24,102 +26,200 @@ import type {
   TextOverlayConfig,
 } from "../imaging/types";
 import {
+  loadDeletedDeviceIds,
   loadReconnectPrefs,
   loadSavedDeviceProfiles,
   type AutoReconnectPreferences,
   type SavedBadgeProfile,
 } from "./deviceRegistry";
+import type { FrozenUploadSession, PendingPrepareTarget } from "./sendSession";
 
-/** Maximum number of communication log lines retained in memory. */
+/** Maximum retained BLE log lines kept in browser memory. */
 export const MAX_LOG_ENTRIES = 500;
 
 /**
- * Top-level drill-down screen identifiers separating Home Device List,
- * Image Select/Push flow, and Device Detail / Bluetooth Unpair instructions.
+ * Five-screen user workflow identifiers:
+ * 1. `"home"` — Welcome / Draft entry (`ホーム`)
+ * 2. `"editor"` — Circular crop, transform & text editor (`写真を整える`)
+ * 3. `"send"` — Target confirmation, progress & completion/recovery (`バッジに送る`)
+ * 4. `"badges"` — Saved badges switcher (`マイバッジ`)
+ * 5. `"device-detail"` — Individual badge details & unpairing guide (`バッジ詳細`)
  */
-export type AppScreenId = "home" | "push" | "device-detail";
+export type AppScreenId = "home" | "editor" | "send" | "badges" | "device-detail";
 
-/** Metadata describing the currently loaded local source bitmap. */
+/** Summary metadata of the currently loaded local source image. */
 export interface LoadedSourceMeta {
-  /** Original local file name (never sent to any remote server). */
+  /** Original filename selected by the user. */
   readonly fileName: string;
-  /** Natural image width in pixels. */
+  /** Natural horizontal pixel dimension of the decoded bitmap. */
   readonly naturalWidth: number;
-  /** Natural image height in pixels. */
+  /** Natural vertical pixel dimension of the decoded bitmap. */
   readonly naturalHeight: number;
 }
 
-/** Complete read-only state snapshot observed by UI components. */
+/** Explicit result banner state rendered on Screen 3 (`"send"`) after or around an upload attempt. */
+export interface SendOutcomeState {
+  /** High-level outcome category matching the send/recovery screen states. */
+  readonly kind:
+    | "completed"
+    | "disconnect_or_timeout"
+    | "device_refusal"
+    | "unsupported"
+    | "prepare_aborted"
+    | "connect_failed";
+  /** Destination badge `device.id` bound to this outcome, if applicable. */
+  readonly targetDeviceId: string | null;
+  /** User-facing badge label shown alongside the outcome message. */
+  readonly targetDeviceName: string;
+  /** Primary localized explanation text. */
+  readonly message: string;
+  /** `true` when upload failed specifically waiting for the post-95% Finish ACK. */
+  readonly isFinishTimeout?: boolean;
+  /** CRC-32 hex digest of the transmitted JPEG bytes when completed. */
+  readonly checksumHex?: string;
+  /** Payload size in bytes when completed. */
+  readonly byteLength?: number;
+  /** Elapsed transfer duration formatted in seconds when completed. */
+  readonly durationSec?: string;
+  /** Normalized device refusal key (`"low_battery" | "charging" | "storage_full" | ...`). */
+  readonly errorKey?: DialErrorKey;
+  /** Specific environment/firmware incompatibility reason when `kind === "unsupported"`. */
+  readonly unsupportedReason?: "no_web_bluetooth" | "unsupported_algorithm" | "unverified_device";
+  /** Reported WatchTheme algorithm ID when unsupported, or `null` when unavailable. */
+  readonly algorithm?: number | null;
+  /** Structured connection failure cause when `kind === "connect_failed"`. */
+  readonly connectFailureReason?: Bg02ConnectFailureReason;
+}
+
+/** Confirmation notice shown on Screen 5 (`"device-detail"`) after removing a badge. */
+export interface DetailForgetNotice {
+  /** Identifier of the removed badge. */
+  readonly deviceId: string;
+  /** Former nickname shown in the two-sentence confirmation notice. */
+  readonly deviceName: string;
+  /** Whether Chrome/Edge `BluetoothDevice.forget()` successfully revoked OS permission. */
+  readonly browserPermissionRevoked: boolean;
+}
+
+/** Diagnostic summary of the most recently completed dial upload, kept for Badge Details Diagnostics. */
+export interface CompletedTransferDiagnostic {
+  /** Destination badge `device.id` that received the upload. */
+  readonly targetDeviceId: string;
+  /** User-facing badge nickname at the time of completion. */
+  readonly targetDeviceName: string;
+  /** Hexadecimal 32-bit additive checksum matching the firmware Finish payload. */
+  readonly checksumHex: string;
+  /** Uploaded JPEG size in bytes. */
+  readonly byteLength: number;
+  /** Formatted elapsed transfer duration in seconds. */
+  readonly durationSec: string;
+  /** ISO-8601 timestamp recorded when the badge confirmed `FINISH_OK`. */
+  readonly completedAtIso: string;
+}
+
+/** Immutable snapshot consumed by all UI modules when re-rendering. */
 export interface AppStateSnapshot {
-  /** Currently visible drill-down view screen (`"home" | "push" | "device-detail"`). */
+  /** Currently visible top-level screen across the 5-screen architecture. */
   readonly activeScreen: AppScreenId;
-  /** Badge identifier focused inside the Device Detail & Unpair view, or `null`. */
+  /** Screen to return to when pressing `< Back` from Screen 4 (`"badges"`). */
+  readonly badgesReturnScreen: "home" | "send";
+  /** Badge identifier focused inside Screen 5 (`"device-detail"`), or `null`. */
   readonly detailDeviceId: string | null;
-  /** Current BLE GATT lifecycle status. */
+  /** Explicitly chosen destination badge ID for Screen 3 (`"send"`), or `null` when unselected. */
+  readonly selectedSendTargetId: string | null;
+  /** Target badge ID currently awaiting browser/GATT connection, or `null`. */
+  readonly pendingConnectDeviceId: string | null;
+  /** Current Web Bluetooth GATT connection state. */
   readonly connectionStatus: BleConnectionStatus;
-  /** Whether a paired device is cached for quick dialog-free reconnect. */
+  /** Whether the BLE client currently holds a live cached device handle. */
   readonly canReconnect: boolean;
-  /** Latest connected BG02 device metadata & telemetry, or `null`. */
+  /** Verified hardware/display telemetry for the live connected badge only. */
   readonly metadata: ConnectedDeviceMetadata | null;
   /** Discovery toggle enabling `acceptAllDevices: true` when UUID ads are omitted. */
   readonly acceptAllDevices: boolean;
-  /** Throughput toggle favoring `writeValueWithoutResponse` + 6ms pacing. */
+  /** Write pacing preference (`writeValueWithoutResponse` vs ACKed `writeValueWithResponse`). */
   readonly preferWriteWithoutResponse: boolean;
-  /** Saved BG02 badges remembered locally for multi-badge switching and nicknames. */
+  /** Non-deleted saved BG02 badge profiles persisted in browser storage. */
   readonly savedDevices: ReadonlyArray<SavedBadgeProfile>;
-  /** Web Bluetooth device IDs holding a live `BluetoothDevice` handle in this tab/session. */
+  /** Tombstone IDs of user-deleted badges filtered from `getDevices()` startup reconnect. */
+  readonly deletedDeviceIds: ReadonlyArray<string>;
+  /** Permitted `device.id` values exposed by `navigator.bluetooth.getDevices()`. */
   readonly liveDeviceIds: ReadonlyArray<string>;
-  /** Currently active or target BG02 device ID, or `null`. */
+  /** Live connected BLE client `device.id`, or `null` when disconnected. */
   readonly activeDeviceId: string | null;
-  /** User preferences governing unexpected-drop retry and startup auto-connect. */
+  /** Saved automatic reconnect toggles and most recent badge candidate ID. */
   readonly reconnectPrefs: AutoReconnectPreferences;
-  /** Live automatic reconnect progress, or `null` when idle. */
+  /** Live automatic reconnect loop status, or `null` when idle. */
   readonly reconnectStatus: ReconnectStatus | null;
-  /** Loaded image file summary, or `null` when editing background/text only. */
+  /** Metadata of loaded source bitmap, or `null` when starting blank/text-only. */
   readonly sourceMeta: LoadedSourceMeta | null;
-  /** Current image placement/scale/rotation/background configuration. */
+  /** Geometric photo crop/zoom/rotation parameters. */
   readonly transform: ImageTransform;
-  /** Current optional text overlay configuration (disabled by default). */
+  /** Baked-in canvas text overlay settings. */
   readonly textOverlay: TextOverlayConfig;
-  /** Current JPEG auto-optimization or manual quality setting. */
+  /** Whether the inline text-editing card is expanded inside Screen 2 (`"editor"`). */
+  readonly textEditorOpen: boolean;
+  /** Baseline JPEG encoding mode and quality settings. */
   readonly encoding: JpegEncodingConfig;
-  /** Most recent rendered Baseline JPEG output and inspection verdict. */
+  /** Monotonic counter incremented on every draft photo, transform, text, or encoding change. */
+  readonly draftGeneration: number;
+  /** `true` while decoding a newly picked image file. */
+  readonly isLoadingImage: boolean;
+  /** `true` while compositing/encoding the 240×240 Baseline JPEG preview. */
+  readonly isEncodingDraft: boolean;
+  /** Localized non-destructive error banner shown if the latest image load failed. */
+  readonly imageLoadError: string | null;
+  /** Latest composited 240×240 JPEG result matching `draftGeneration`, or `null`. */
   readonly latestOutput: CompositedBadgeResult | null;
-  /** Active WatchTheme3 transfer progress snapshot, or `null` when idle. */
+  /** Synchronous target+draft lock held while async JPEG preparation runs before BLE writes start. */
+  readonly preparingSend: PendingPrepareTarget | null;
+  /** Immutable JPEG payload pinned at send start and reused across retries until edited. */
+  readonly frozenRetrySession: FrozenUploadSession | null;
+  /** Live chunk transfer progress (`"start" | "transferring" | "awaiting_finish"`), or `null`. */
   readonly uploadProgress: UploadProgress | null;
-  /** Localized upload completion banner text, or `null`. */
+  /** Structured outcome displayed inside Screen 3 (`"send"`), or `null`. */
+  readonly sendOutcome: SendOutcomeState | null;
+  /** Diagnostic summary of the most recently completed upload, rendered in Device Details Diagnostics. */
+  readonly lastCompletedTransfer: CompletedTransferDiagnostic | null;
+  /** Warning flag set when browser Back/Forward lands on a drifted send target. */
+  readonly targetDriftNotice: boolean;
+  /** Post-removal feedback displayed on Screen 5 (`"device-detail"`). */
+  readonly detailForgetNotice: DetailForgetNotice | null;
+  /** Optional generic upload success announcement text, or `null`. */
   readonly uploadSuccessBanner: string | null;
-  /** Localized action/connection error banner text, or `null`. */
+  /** Optional generic action error banner text, or `null`. */
   readonly actionErrorBanner: string | null;
-  /** Chronological communication and protocol log lines. */
+  /** Timestamped BLE/system diagnostic log lines. */
   readonly logs: ReadonlyArray<BleLogEntry>;
-  /** Whether the PWA Service Worker has registered successfully. */
+  /** `true` strictly when Service Worker control and scoped app shell cache are confirmed. */
   readonly serviceWorkerActive: boolean;
 }
 
-/** Subscriber callback notified synchronously on state mutations. */
+/** Subscriber callback notified synchronously after every state update. */
 export type StoreListener = (state: AppStateSnapshot) => void;
 
 /**
- * Centralized unidirectional state container for BG02 Studio.
+ * Reactive store driving all 5 screens of BG02 Studio.
  */
 export class AppStore {
-  /** Current internal immutable state object. */
+  /** Current immutable reactive state snapshot. */
   private state: AppStateSnapshot;
-  /** Active UI change subscribers. */
+  /** Registered subscriber listeners notified synchronously on mutation. */
   private readonly listeners = new Set<StoreListener>();
-  /** Monotonic log sequence counter. */
+  /** Monotonically increasing log entry ID counter. */
   private nextLogId = 1;
-  /** Session start epoch used to format relative `h:mm:ss` timestamps matching legacy traces. */
+  /** Startup wall-clock baseline used to format elapsed log timestamps. */
   private readonly startEpochMs = Date.now();
 
   /**
-   * Initializes the store with clean disconnected defaults and `autoOptimize: true`.
+   * Initializes application state from saved non-deleted badge profiles and reconnect preferences.
    */
   public constructor() {
-    const savedDevices = loadSavedDeviceProfiles();
+    const deletedDeviceIds = loadDeletedDeviceIds();
+    const deletedSet = new Set(deletedDeviceIds);
+    const savedDevices = loadSavedDeviceProfiles().filter((d) => !deletedSet.has(d.id));
     const reconnectPrefs = loadReconnectPrefs();
-    const initialActiveId =
+    const initialDetailId =
       reconnectPrefs.lastActiveDeviceId &&
       savedDevices.some((d) => d.id === reconnectPrefs.lastActiveDeviceId)
         ? reconnectPrefs.lastActiveDeviceId
@@ -127,23 +227,38 @@ export class AppStore {
 
     this.state = {
       activeScreen: "home",
-      detailDeviceId: initialActiveId,
+      badgesReturnScreen: "home",
+      detailDeviceId: initialDetailId,
+      selectedSendTargetId: null,
+      pendingConnectDeviceId: null,
       connectionStatus: "disconnected",
       canReconnect: false,
       metadata: null,
       acceptAllDevices: true,
       preferWriteWithoutResponse: false,
       savedDevices,
+      deletedDeviceIds,
       liveDeviceIds: [],
-      activeDeviceId: initialActiveId,
+      activeDeviceId: null,
       reconnectPrefs,
       reconnectStatus: null,
       sourceMeta: null,
       transform: createDefaultTransform(),
       textOverlay: createDefaultTextOverlay(),
+      textEditorOpen: false,
       encoding: createDefaultEncodingConfig(),
+      draftGeneration: 0,
+      isLoadingImage: false,
+      isEncodingDraft: false,
+      imageLoadError: null,
       latestOutput: null,
+      preparingSend: null,
+      frozenRetrySession: null,
       uploadProgress: null,
+      sendOutcome: null,
+      lastCompletedTransfer: null,
+      targetDriftNotice: false,
+      detailForgetNotice: null,
       uploadSuccessBanner: null,
       actionErrorBanner: null,
       logs: [],
@@ -152,31 +267,30 @@ export class AppStore {
   }
 
   /**
-   * Returns the latest immutable state snapshot.
-   *
-   * @returns Current {@link AppStateSnapshot}.
+   * Returns the current immutable state snapshot.
    */
   public get snapshot(): AppStateSnapshot {
     return this.state;
   }
 
   /**
-   * Subscribes to store state changes.
+   * Registers a listener and immediately delivers the current snapshot.
    *
-   * @param listener - Function invoked whenever state changes.
+   * @param listener - Callback invoked on initial registration and every update.
    * @returns Unsubscribe function.
    */
   public subscribe(listener: StoreListener): () => void {
     this.listeners.add(listener);
+    listener(this.state);
     return () => {
       this.listeners.delete(listener);
     };
   }
 
   /**
-   * Replaces selected top-level fields and notifies subscribers.
+   * Merges top-level fields into state and notifies subscribers.
    *
-   * @param patch - Partial snapshot properties to merge cleanly.
+   * @param patch - Partial snapshot update object.
    */
   public patchState(patch: Partial<AppStateSnapshot>): void {
     this.state = { ...this.state, ...patch };
@@ -184,42 +298,82 @@ export class AppStore {
   }
 
   /**
-   * Updates image placement/zoom/rotation/background fields cleanly.
+   * Updates photo transform parameters, increments `draftGeneration`, and invalidates stale retry state.
    *
-   * @param patch - Partial {@link ImageTransform} fields.
+   * @param patch - Partial geometric transform patch.
    */
   public updateTransform(patch: Partial<ImageTransform>): void {
     this.state = {
       ...this.state,
       transform: { ...this.state.transform, ...patch },
+      draftGeneration: this.state.draftGeneration + 1,
+      imageLoadError: null,
+      frozenRetrySession: null,
+      sendOutcome: null,
       uploadSuccessBanner: null,
+      actionErrorBanner: null,
     };
     this.emit();
   }
 
   /**
-   * Updates optional text overlay settings.
+   * Updates baked-in text overlay settings, increments `draftGeneration`, and invalidates stale retry state.
    *
-   * @param patch - Partial {@link TextOverlayConfig} fields.
+   * @param patch - Partial text overlay patch.
    */
   public updateTextOverlay(patch: Partial<TextOverlayConfig>): void {
     this.state = {
       ...this.state,
       textOverlay: { ...this.state.textOverlay, ...patch },
+      draftGeneration: this.state.draftGeneration + 1,
+      imageLoadError: null,
+      frozenRetrySession: null,
+      sendOutcome: null,
       uploadSuccessBanner: null,
+      actionErrorBanner: null,
     };
     this.emit();
   }
 
   /**
-   * Updates JPEG optimization mode, byte budget, or manual quality.
+   * Updates Baseline JPEG encoding settings, increments `draftGeneration`, and invalidates stale retry state.
    *
-   * @param patch - Partial {@link JpegEncodingConfig} fields.
+   * @param patch - Partial encoding configuration patch.
    */
   public updateEncoding(patch: Partial<JpegEncodingConfig>): void {
     this.state = {
       ...this.state,
       encoding: { ...this.state.encoding, ...patch },
+      draftGeneration: this.state.draftGeneration + 1,
+      frozenRetrySession: null,
+      sendOutcome: null,
+      uploadSuccessBanner: null,
+      actionErrorBanner: null,
+    };
+    this.emit();
+  }
+
+  /**
+   * Replaces loaded source photo metadata, increments `draftGeneration`, and resets prior upload banners.
+   *
+   * @param sourceMeta - Decoded image metadata, or `null` when clearing photo.
+   * @param transformPatch - Optional transform override (e.g. centered fit when loading a new file).
+   */
+  public setSourceMeta(
+    sourceMeta: LoadedSourceMeta | null,
+    transformPatch?: ImageTransform
+  ): void {
+    this.state = {
+      ...this.state,
+      sourceMeta,
+      transform: transformPatch ?? this.state.transform,
+      draftGeneration: this.state.draftGeneration + 1,
+      isLoadingImage: false,
+      imageLoadError: null,
+      frozenRetrySession: null,
+      sendOutcome: null,
+      uploadSuccessBanner: null,
+      actionErrorBanner: null,
     };
     this.emit();
   }
@@ -228,7 +382,7 @@ export class AppStore {
    * Appends a timestamped communication log entry, capping history at {@link MAX_LOG_ENTRIES}.
    *
    * @param level - Severity / direction tag.
-   * @param message - Log message content.
+   * @param message - Human-readable diagnostic line.
    */
   public appendLog(level: LogLevel, message: string): void {
     const elapsedSec = Math.floor((Date.now() - this.startEpochMs) / 1000);
@@ -255,16 +409,14 @@ export class AppStore {
   }
 
   /**
-   * Clears all buffered communication logs.
+   * Clears retained communication log entries cleanly.
    */
   public clearLogs(): void {
     this.state = { ...this.state, logs: [] };
     this.emit();
   }
 
-  /**
-   * Notifies all registered UI subscribers with the latest snapshot.
-   */
+  /** Dispatches the latest snapshot to every subscribed listener. */
   private emit(): void {
     for (const listener of this.listeners) {
       listener(this.state);

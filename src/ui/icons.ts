@@ -33,6 +33,11 @@ export type StudioIconName =
   | "camera"
   | "chevronRight"
   | "arrowLeft"
+  | "arrowUp"
+  | "arrowDown"
+  | "zoomIn"
+  | "zoomOut"
+  | "alert"
   | "unlink"
   | "info";
 
@@ -143,6 +148,20 @@ export const ICON_PATHS: Readonly<Record<StudioIconName, ReadonlyArray<IconShape
   ],
   chevronRight: [{ tag: "path", d: "M9 18l6-6-6-6" }],
   arrowLeft: [{ tag: "path", d: "M15 18l-6-6 6-6" }],
+  arrowUp: [{ tag: "path", d: "M18 15l-6-6-6 6" }],
+  arrowDown: [{ tag: "path", d: "M6 9l6 6 6-6" }],
+  zoomIn: [
+    { tag: "circle", cx: 11, cy: 11, r: 7 },
+    { tag: "path", d: "M21 21l-4.35-4.35M11 8v6M8 11h6" },
+  ],
+  zoomOut: [
+    { tag: "circle", cx: 11, cy: 11, r: 7 },
+    { tag: "path", d: "M21 21l-4.35-4.35M8 11h6" },
+  ],
+  alert: [
+    { tag: "path", d: "M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" },
+    { tag: "path", d: "M12 9v4M12 17h.01" },
+  ],
   unlink: [
     { tag: "path", d: "m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71" },
     { tag: "path", d: "m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71" },

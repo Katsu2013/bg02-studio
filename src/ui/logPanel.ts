@@ -22,7 +22,7 @@ export interface LogPanelHandlers {
 export class LogPanel {
   /** Root `<section>` mounted inside `<main>`. */
   public readonly element: HTMLElement;
-  /** Panel `<h2>` heading element. */
+  /** Panel `<h3>` heading element inside Diagnostics details. */
   private readonly headingEl: HTMLHeadingElement;
   /** Button copying buffered log lines to clipboard. */
   private readonly copyBtn: IconButtonHandle;
@@ -44,7 +44,7 @@ export class LogPanel {
   public constructor(initialDict: TranslationSchema, handlers: LogPanelHandlers) {
     this.dict = initialDict;
 
-    this.headingEl = createEl("h2", { id: "log-panel-heading", text: initialDict.logs.heading });
+    this.headingEl = createEl("h3", { id: "log-panel-heading", className: "card-subsection-title", text: initialDict.logs.heading });
     this.copyBtn = createIconButton("btn btn-sm", "copy", initialDict.logs.btnCopy, 15);
     this.clearBtn = createIconButton("btn btn-sm", "trash", initialDict.logs.btnClear, 15);
 

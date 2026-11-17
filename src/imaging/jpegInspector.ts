@@ -4,6 +4,7 @@
  * before transmission so unsupported Progressive JPEGs never reach the BG02 badge.
  */
 
+import type { ConnectedDeviceMetadata, DisplayShape } from "../ble/types";
 import type { JpegInspectionResult } from "./types";
 
 /**
@@ -121,4 +122,64 @@ export function isUploadableJpeg(
     return false;
   }
   return true;
+}
+
+/** Diagnostic verification result determining whether a connected badge accepts WatchTheme3 JPEG uploads. */
+export type DeviceUploadSupportResult =
+  | {
+      /** Indicates verified Baseline JPEG upload compatibility. */
+      readonly supported: true;
+      /** Verified horizontal badge resolution in pixels. */
+      readonly width: number;
+      /** Verified vertical badge resolution in pixels. */
+      readonly height: number;
+      /** Verified screen geometry classification. */
+      readonly shape: DisplayShape;
+    }
+  | {
+      /** Indicates uploads must be blocked for safety/compatibility reasons. */
+      readonly supported: false;
+      /** Machine-readable incompatibility category. */
+      readonly reason:
+        | "not_connected"
+        | "unverified_device"
+        | "unsupported_algorithm"
+        | "invalid_dimensions";
+      /** Reported firmware compression algorithm byte when known. */
+      readonly algorithm?: number | null;
+    };
+
+/**
+ * Verifies that a connected BG02 device has reported verified display dimensions
+ * and JPEG encoding (`algorithm === 4`) before allowing a `WatchTheme3` Start frame.
+ *
+ * @param metadata - Active connected device telemetry snapshot, or `null`.
+ * @returns Structured support verdict gating hardware writes.
+ */
+export function assessDeviceUploadSupport(
+  metadata: ConnectedDeviceMetadata | null
+): DeviceUploadSupportResult {
+  if (!metadata) {
+    return { supported: false, reason: "not_connected" };
+  }
+  const dialInfo = metadata.dialInfo;
+  if (!dialInfo) {
+    return { supported: false, reason: "unverified_device" };
+  }
+  if (dialInfo.algorithm !== 4) {
+    return {
+      supported: false,
+      reason: "unsupported_algorithm",
+      algorithm: dialInfo.algorithm,
+    };
+  }
+  if (dialInfo.width <= 0 || dialInfo.height <= 0) {
+    return { supported: false, reason: "invalid_dimensions" };
+  }
+  return {
+    supported: true,
+    width: dialInfo.width,
+    height: dialInfo.height,
+    shape: dialInfo.shape,
+  };
 }

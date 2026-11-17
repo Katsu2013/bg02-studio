@@ -24,20 +24,28 @@ See [docs/BACKGROUND.md](./docs/BACKGROUND.md) and [docs/PROTOCOL.md](./docs/PRO
 
 ## Capabilities (What It Can Do)
 
-- **100% Local & Zero External Network Requests**
-  - Runs purely in the browser (installable as an offline PWA via a lightweight dependency-free Service Worker). Never sends telemetry or images to external servers.
-- **Direct BLE Connection, Multi-Badge List, Auto-Reconnect & Unpairing Guide**
-  - Reads Battery Level (auto-refreshed every 30 s while idle & connected), Device Information Service (DIS), display specs (`240×240`, `round`, `JPEG (4)`), and free flash storage (`0x20/0x04`).
-  - **Multi-badge Home list**: Displays saved badges with clean status & battery readouts; tapping a badge connects (if disconnected) and transitions directly to the Single Image Push view, while a dedicated Device Details screen exposes specs, nickname editing, and step-by-step browser (`device.forget()`) & OS Bluetooth unpairing guides.
-  - **Reconnect & Auto-Resend**: Supports exponential-backoff drop recovery (up to 3 retries), automatic connection checks before upload, 2-tier automatic resend for 95% completion stalls, and optional startup reconnect via `navigator.bluetooth.getDevices()`.
-  - Handles the mandatory two-notify subscription (`7e400003` & `7e400004`), `0x12/0x0A` handshake, 20-byte GATT write chunking, and automatic `0xDC` ACK responses.
-- **Beginner-Friendly Drill-Down Flow & Responsive PC Dual-Pane Studio**
-  - Separates Home (`My Badges`), `Single image push`, and `Device Details & Unpair` into focused screens with explicit `<` Back navigation and browser history support.
-  - On mobile viewports, `Single image push` keeps the UI ultra-clean (circular preview, Upload CTA, remaining space, Camera/Gallery tiles, collapsed advanced rows). On wide PC viewports (`>= 860px`), fine alignment, text overlay, quality controls, SOF0 inspection, and JPEG download appear expanded side-by-side.
-  - Load local images (PNG / JPG / WebP / SVG) or capture via mobile camera, drag to pan, **2-finger pinch or scroll wheel to zoom**, rotate, and configure background fill inside the circular frame.
-  - Optionally overlay multi-line stroked text (using system/browser fonts to avoid device mojibake), export/download locally or upload a verified **Baseline JPEG (`SOF0`)** with **auto-optimization targeting ≤ 15 KiB** (or switch to a manual quality slider).
-- **Multilingual UI (i18n)**
-  - Supports **Japanese (`ja`)** and **English (`en`)** out of the box with a type-safe dictionary schema for easy language additions.
+- **100% Local Processing with Zero External Uploads**
+  - All image cropping, Baseline JPEG generation, and BLE packets stay strictly inside your browser—never uploaded to external APIs or servers. Includes a scope-isolated Service Worker for offline PWA launches.
+- **Focused 5-Screen Workflow (Single-Column Mobile + 60/40 Desktop Editor)**
+  1. **Home**: A short logo screen leads to a first-visit guide. Start with **Connect badge**. Once connected, **Choose photo** becomes the primary action. **Try without connecting** opens the photo tools, including a bundled sample.
+  2. **Adjust photo**: Drag, two-finger pinch, scroll wheel zoom, rotate, keyboard arrow/`+`/`-` adjustments, and baked-in stroked text overlays. Fine sliders and SOF0 validation stay neatly tucked inside collapsed `<details>` disclosures.
+  3. **Send to badge**: Explicit target confirmation (with fixed `slot=5538` overwrite notice), native determinate/indeterminate `<progress>`, immutable single-image retries on disconnect/timeout, and clear refusal messages (`battery < 20%`, charging `code=4`, insufficient space, unsupported `algorithm`).
+  4. **Registered badges**: The header opens the list of saved badges, including connection status and whether the battery reading is live, cached, or unavailable. **Manage** opens settings for the displayed badge.
+  5. **Badge details**: Rename badge, configure auto-reconnect toggles, unregister with explicit badge-name confirmation and honest browser/OS unpairing instructions (`device.forget()`), plus collapsed BLE diagnostics and logs.
+- **Works Offline Without Bluetooth for Editing & JPEG Export**
+  - Even on iOS Safari or when no badge is connected, users can still compose circular artwork, add Japanese/English text, and save a verified `240×240` Baseline JPEG locally.
+
+---
+
+## OS & API Compatibility Matrix
+
+| Platform / Browser | Web Bluetooth Upload | `getDevices()` / `forget()` | Local Editor & JPEG Save |
+| :--- | :--- | :--- | :--- |
+| Windows / macOS / Linux (Chrome / Edge) | Supported (HTTPS / localhost) | Build/flag dependent (chooser & manual unpair fallback included) | Supported |
+| Android (Chrome / Edge) | Supported (BT & nearby permission required) | Chrome-version dependent | Supported |
+| iOS / iPadOS Safari | **Not supported** | Not supported | **Supported** |
+
+- **Hardware baseline**: Original protocol captures were measured on `BG02` (`Manufacturer: LJ733_V1_BadgeOK`, `Hardware: LJ733_MB_V1.5`, `Firmware: V35922`, `240×240` Round, `algorithm = 4`). Post-redesign send flows were verified against a 2-device simulated BLE client; final smoke verification on physical hardware is recommended prior to distribution.
 
 ---
 

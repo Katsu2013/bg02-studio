@@ -2,9 +2,10 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#0ea5e9" />
+    <meta name="theme-color" content="#f7f6f3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0f17" media="(prefers-color-scheme: dark)" />
     <meta
       name="description"
       content="Privacy-first, 100% local TypeScript PWA for composing circular 240x240 display images for the BG02 (E-BADGE) via Web Bluetooth."
@@ -12,10 +13,30 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
     <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <link rel="stylesheet" href="./src/ui/styles.css" />
+    <link rel="stylesheet" href="./src/ui/home.css" />
     <title>BG02 Studio</title>
   </head>
   <body>
-    <div id="app" class="app-shell"></div>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="startup" class="startup" role="status" aria-label="BG02 Studio">
+      <img src="./icons/studio.svg" alt="" width="64" height="64" />
+      <strong>BG02 Studio</strong>
+    </div>
+    <noscript><p>JavaScript is required to use BG02 Studio.</p></noscript>
+    <div id="app" class="app-shell" hidden></div>
+    <dialog id="first-run-guide" class="first-run-guide" aria-labelledby="first-run-title" aria-describedby="first-run-copy">
+      <div class="guide-spotlight" aria-hidden="true"></div>
+      <div class="guide-arrow" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 12H5m6 6-6-6 6-6" />
+        </svg>
+      </div>
+      <div class="guide-tip">
+        <h2 id="first-run-title"></h2>
+        <p id="first-run-copy"></p>
+        <button type="button" class="btn btn-primary" id="first-run-ok" autofocus>OK</button>
+      </div>
+    </dialog>
+    <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

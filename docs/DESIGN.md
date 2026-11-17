@@ -62,14 +62,22 @@ bg02-studio/
     │   ├── en.ts              # 英語辞書
     │   └── i18n.ts            # 言語検出・localStorage 永続化・イベント通知・補間
     ├── state/
-    │   ├── appStore.ts        # 接続状態・登録バッジ一覧・編集パラメータ・ログの単方向状態管理
-    │   └── deviceRegistry.ts  # 複数台 BG02 プロファイル・ニックネーム・自動再接続設定の永続化
+    │   ├── appStore.ts        # 5画面状態・ドラフト世代・不変リトライセッション・ログの単方向ストア
+    │   ├── deviceRegistry.ts  # 複数台 BG02 プロファイル・削除済墓石(deletedDeviceIds)・自動再接続設定
+    │   ├── offlineStatus.ts   # Service Worker 制御 & スコープ付きキャッシュ実在検証
+    │   └── sendSession.ts     # 送信先分離・送信前安全ゲート(evaluateUploadGate)・履歴復元
     ├── ui/
-    │   ├── styles.css         # SuperBand 風レスポンシブ & 2カラム PC ワークステーション (light-dark() / 純CSS)
+    │   ├── styles.css         # 無地ソリッド面基調・ライト/ダーク両対応 (light-dark() / forced-colors)
     │   ├── icons.ts           # DOM API (`createElementNS`) によるゼロ依存インライン SVG アイコン群
     │   ├── domHelpers.ts      # 安全な DOM 構築 / XSS 回避（textContent 原則・アイコン付きボタン）
-    │   ├── connectionPanel.ts # グラデーションヒーローカード・1タップバッジ切替・マルチ端末管理・自動再接続・テレメトリ
-    │   ├── badgeEditor.ts     # 円形プレビュー・カメラ/画像タイル・1本指ドラッグ/2本指ピンチ・位置/JPEGアコーディオン分割UI
+    │   ├── badgeStatusHelper.ts # バッジ状態・電池表記（前回取得/未確認）・円形サムネイル共通関数
+    │   ├── screenRouter.ts    # 5画面遷移履歴 (History API)・inert隔離・フォーカス復帰制御
+    │   ├── homePanel.ts       # 画面1 ホーム（接続、接続状態に応じた編集導線、表示中のバッジの管理）
+    │   ├── firstRun.ts        # 起動ロゴの表示時間と、ホームの主操作を指す初回案内
+    │   ├── badgeEditor.ts     # 画面2 写真を整える（円形プレビュー・ドラッグ/ピンチ/キー操作・折畳詳細）
+    │   ├── sendPanel.ts       # 画面3 バッジに送る（9状態遷移・ネイティブ<progress>・再送復旧）
+    │   ├── badgesListPanel.ts # 画面4 登録済みバッジ（一覧・追加・詳細遷移）
+    │   ├── deviceDetailPanel.ts # 画面5 バッジ詳細（名前変更・削除確認・解除手順・診断アコーディオン）
     │   └── logPanel.ts        # 通信ログ表示・コピー・クリア機能
     └── __tests__/
         ├── badgeCompositor.test.ts
@@ -78,22 +86,34 @@ bg02-studio/
         ├── frameCodec.test.ts
         ├── i18n.test.ts
         ├── jpegInspector.test.ts
+        ├── p1SecurityAndRaces.test.ts
+        ├── screenRouter.test.ts
         └── writeQueue.test.ts
 ```
 
-### データフロー図
+### 5画面遷移と BLE / 送信安全状態機械
 
 ```mermaid
 flowchart LR
-    UI["ui/ (badgeEditor / connectionPanel)"] -->|"状態更新・操作要求"| Store["state/appStore.ts"]
-    UI -->|"画像+配置+任意文字"| Comp["imaging/badgeCompositor.ts"]
-    Comp -->|"Baseline JPEG バイト列"| Insp["imaging/jpegInspector.ts"]
-    Insp -->|"検証済 JPEG (SOF0)"| Client["ble/bg02Client.ts"]
-    Client <-->|"Frame Encode / Parse"| Codec["ble/frameCodec.ts"]
-    Client -->|"20B分割+ACK優先送信"| Queue["ble/writeQueue.ts"]
-    Queue <-->|"Web Bluetooth GATT"| Device["BG02 実機"]
-    I18n["i18n/ (ja / en)"] --> UI
+    H["1. ホーム (home)"] -->|"接続後または接続せずに試す → 写真を選ぶ"| E["2. 写真を整える (editor)"]
+    H -->|"登録済みバッジ"| B["4. 登録済みバッジ (badges)"]
+    E -->|"送信へ (最新生成完了)"| S["3. バッジに送る (send)"]
+    S -->|"登録済みバッジ / 送り先管理"| B
+    B -->|"各バッジ選択"| D["5. バッジ詳細 (device-detail)"]
+    D -->|"このバッジに写真を送る"| E
 ```
+
+- **誤送信・誤完了防止の不変条件**:
+  - `WriteQueue.reset()` と `Bg02Client.sessionGeneration` / `connectAttemptSeq` により、切断・再接続・ピッカーキャンセルで旧接続の書き込みや通知が新セッションへ混線しません。
+  - `UploadPhase` (`"awaiting_start_ack" | "sending_chunks" | "awaiting_finish_ack"`) により、全チャンク完了・`DIAL_FINISH` 送出前の早期 `code=2` は完了として受け入れません。
+  - `evaluateUploadGate()` が `expectedDeviceId` 一致、`algorithm === 4`、寸法、`SOF0`、電池 ≥ 20% を確認したうえで不変コピー `FrozenUploadSession` を確定し、失敗時は同一バイト列で再送します。
+
+### 検証ログ（版別・検証範囲）
+
+| 時期 / 対象 | 実機接続 (`BG02 V35922`) | ブラウザ / API 自動・擬似検証 | 備考 |
+| :--- | :--- | :--- | :--- |
+| 初期実機解析フェーズ | 実施済み（`240×240`, `algorithm=4`, `slot=5538`, `0x20/0x02`, `0x20/0x04`） | 単体テスト基礎 | BLE プロトコル仕様・95% 停止要因確認 |
+| P1/P2 セキュリティ改修 & 5画面再構成版（現在） | **未実施**（実機再テスト待ち） | Vitest（2端末擬似クライアント再現・SWキャッシュ・墓石除外含む）＋ Headless Chrome (Win11) 画面検証 | `getDevices()` / `forget()` の環境差は Chrome 157 実測仕様＋擬似ドライバで確認 |
 
 ---
 

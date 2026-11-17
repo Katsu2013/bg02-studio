@@ -17,6 +17,8 @@ import type { WebBluetoothCharacteristic } from "./webBluetooth.types";
 export interface QueuedWriteItem {
   /** Immutable byte buffer copied at enqueue time. */
   readonly bytes: Uint8Array;
+  /** Session generation counter captured when this write was queued. */
+  readonly generation: number;
   /** Delay in milliseconds after all 20-byte slices finish writing. */
   readonly delayAfterMs: number;
   /** Optional log label shown when `enqueue` starts transmitting. */
@@ -48,8 +50,14 @@ export function sleepMs(ms: number): Promise<void> {
 export class BleWriteQueue {
   /** Pending write operations awaiting sequential execution. */
   private readonly queue: QueuedWriteItem[] = [];
-  /** Reentrancy guard indicating whether `drain()` is currently iterating. */
-  private busy = false;
+  /** Monotonic connection generation incremented on every `reset()`. */
+  private generation = 0;
+  /** Monotonic loop token identifying each started `drain()` execution. */
+  private nextDrainToken = 0;
+  /** Token of the currently active `drain()` loop, or `null` when idle or reset. */
+  private activeDrainToken: number | null = null;
+  /** Rejection hook for the item currently mid-write so `reset()` never leaves callers hanging. */
+  private activeInFlightReject: ((err: Error) => void) | null = null;
   /** Callback querying current GATT write characteristic when connected, or `null`. */
   private readonly getWriteCharacteristic: () => WebBluetoothCharacteristic | null;
   /** Callback indicating whether to prefer `writeValueWithoutResponse`. */
@@ -88,10 +96,12 @@ export class BleWriteQueue {
     }
 
     const { priority = false, delayAfterMs = COMMAND_WRITE_DELAY_MS, label } = options;
+    const itemGeneration = this.generation;
 
     return new Promise<void>((resolve, reject) => {
       const item: QueuedWriteItem = {
         bytes: new Uint8Array(bytes),
+        generation: itemGeneration,
         delayAfterMs,
         label,
         resolve,
@@ -110,35 +120,67 @@ export class BleWriteQueue {
   }
 
   /**
-   * Clears and rejects all queued write requests immediately upon link teardown.
+   * Advances queue generation and rejects any in-flight or queued writes immediately on teardown.
    *
    * @param error - Error instance passed to waiting caller promises.
    */
   public reset(error: Error): void {
+    this.generation += 1;
+    this.activeDrainToken = null;
+    const abortCurrent = this.activeInFlightReject;
+    this.activeInFlightReject = null;
+    abortCurrent?.(error);
+
     while (this.queue.length > 0) {
       const item = this.queue.shift();
       item?.reject(error);
     }
-    this.busy = false;
   }
 
   /**
-   * Drains queued write items sequentially until the queue becomes empty.
+   * Drains queued write items sequentially for the active queue generation only.
    */
   private async drain(): Promise<void> {
-    if (this.busy) {
+    if (this.activeDrainToken !== null) {
       return;
     }
-    this.busy = true;
+    const myToken = ++this.nextDrainToken;
+    const myGeneration = this.generation;
+    this.activeDrainToken = myToken;
+
+    const isStillCurrent = (): boolean =>
+      this.activeDrainToken === myToken && this.generation === myGeneration;
+
     try {
-      while (this.queue.length > 0) {
+      while (this.queue.length > 0 && isStillCurrent()) {
         const item = this.queue.shift();
         if (!item) {
           continue;
         }
+        if (item.generation !== this.generation) {
+          item.reject(new Error("BLE connection closed"));
+          continue;
+        }
+
+        let settled = false;
+        const rejectItem = (reason: unknown): void => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          if (this.activeInFlightReject === rejectActive) {
+            this.activeInFlightReject = null;
+          }
+          item.reject(reason);
+        };
+        const rejectActive = (err: Error): void => {
+          rejectItem(err);
+        };
+        this.activeInFlightReject = rejectActive;
+
         try {
-          const writeChar = this.getWriteCharacteristic();
-          if (!writeChar) {
+          const initialChar = this.getWriteCharacteristic();
+          if (!initialChar) {
             throw new Error("GATT disconnected during write");
           }
 
@@ -147,21 +189,42 @@ export class BleWriteQueue {
           }
 
           for (let offset = 0; offset < item.bytes.length; offset += GATT_CHUNK_SIZE) {
+            if (!isStillCurrent() || this.getWriteCharacteristic() !== initialChar) {
+              throw new Error("BLE connection closed");
+            }
             const end = Math.min(offset + GATT_CHUNK_SIZE, item.bytes.length);
             const slice = item.bytes.subarray(offset, end);
-            await this.writeSingleSegment(writeChar, slice);
+            await this.writeSingleSegment(initialChar, slice);
+            if (!isStillCurrent()) {
+              throw new Error("BLE connection closed");
+            }
           }
 
           if (item.delayAfterMs > 0) {
             await sleepMs(item.delayAfterMs);
+            if (!isStillCurrent()) {
+              throw new Error("BLE connection closed");
+            }
           }
-          item.resolve();
+
+          if (!settled) {
+            settled = true;
+            if (this.activeInFlightReject === rejectActive) {
+              this.activeInFlightReject = null;
+            }
+            item.resolve();
+          }
         } catch (err) {
-          item.reject(err);
+          rejectItem(err);
         }
       }
     } finally {
-      this.busy = false;
+      if (this.activeDrainToken === myToken) {
+        this.activeDrainToken = null;
+        if (this.queue.length > 0 && this.getWriteCharacteristic() !== null) {
+          void this.drain();
+        }
+      }
     }
   }
 

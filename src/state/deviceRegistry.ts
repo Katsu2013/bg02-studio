@@ -7,6 +7,9 @@
 /** `localStorage` key storing the array of remembered {@link SavedBadgeProfile} objects. */
 export const DEVICE_REGISTRY_STORAGE_KEY = "bg02-studio.devices.v1";
 
+/** `localStorage` key storing deleted badge IDs excluded from automatic `getDevices()` resurrection. */
+export const DELETED_DEVICES_STORAGE_KEY = "bg02-studio.deletedDevices.v1";
+
 /** `localStorage` key storing user auto-reconnect preferences and last active device ID. */
 export const RECONNECT_PREFS_STORAGE_KEY = "bg02-studio.reconnectPrefs.v1";
 
@@ -169,6 +172,41 @@ export function removeDeviceProfile(
   return existing.filter((item) => item.id !== id);
 }
 
+/**
+ * Marks a forgotten `device.id` in the local tombstone list so browsers without `device.forget()`
+ * do not silently resurrect or auto-connect the deleted badge on reload.
+ *
+ * @param existing - Current list of deleted device identifiers.
+ * @param id - Device identifier forgotten by the user.
+ * @returns Deduplicated updated tombstone list.
+ */
+export function addDeletedDeviceId(
+  existing: ReadonlyArray<string>,
+  id: string
+): ReadonlyArray<string> {
+  if (!id || existing.includes(id)) {
+    return existing;
+  }
+  return [...existing, id];
+}
+
+/**
+ * Clears a `device.id` tombstone when the user explicitly selects and pairs that device again.
+ *
+ * @param existing - Current list of deleted device identifiers.
+ * @param id - Explicitly re-selected device identifier.
+ * @returns Filtered list without `id`.
+ */
+export function clearDeletedDeviceId(
+  existing: ReadonlyArray<string>,
+  id: string
+): ReadonlyArray<string> {
+  if (!existing.includes(id)) {
+    return existing;
+  }
+  return existing.filter((entry) => entry !== id);
+}
+
 /** Resolved target parameters when initiating upload-time reconnection. */
 export interface UploadReconnectPlan {
   /** Whether an existing device handle/ID should be reused before falling back to browser picker. */
@@ -191,6 +229,8 @@ export interface UploadReconnectInputs {
   readonly liveDeviceIds: ReadonlyArray<string>;
   /** Persisted auto-reconnect preferences (`lastActiveDeviceId`). */
   readonly prefs: AutoReconnectPreferences;
+  /** Optional tombstone set excluding user-deleted devices from fallback selection. */
+  readonly deletedDeviceIds?: ReadonlySet<string>;
 }
 
 /**
@@ -233,23 +273,34 @@ function pickMostRecentProfileId(
 export function pickStartupReconnectTarget(
   profiles: ReadonlyArray<SavedBadgeProfile>,
   permittedDeviceIds: ReadonlySet<string>,
-  prefs: AutoReconnectPreferences
+  prefs: AutoReconnectPreferences,
+  deletedDeviceIds: ReadonlySet<string> = new Set()
 ): string | null {
   if (!prefs.autoConnectOnStartup || permittedDeviceIds.size === 0) {
     return null;
   }
 
-  if (prefs.lastActiveDeviceId && permittedDeviceIds.has(prefs.lastActiveDeviceId)) {
+  const allowedPermittedIds = new Set<string>();
+  for (const id of permittedDeviceIds) {
+    if (!deletedDeviceIds.has(id)) {
+      allowedPermittedIds.add(id);
+    }
+  }
+  if (allowedPermittedIds.size === 0) {
+    return null;
+  }
+
+  if (prefs.lastActiveDeviceId && allowedPermittedIds.has(prefs.lastActiveDeviceId)) {
     return prefs.lastActiveDeviceId;
   }
 
-  const recentId = pickMostRecentProfileId(profiles, permittedDeviceIds);
+  const recentId = pickMostRecentProfileId(profiles, allowedPermittedIds);
   if (recentId) {
     return recentId;
   }
 
-  // Fallback to first live browser-permitted badge even if cleared from localStorage
-  for (const permittedId of permittedDeviceIds) {
+  // Fallback to first live non-deleted browser-permitted badge even if localStorage was cleared
+  for (const permittedId of allowedPermittedIds) {
     return permittedId;
   }
   return null;
@@ -266,16 +317,17 @@ export function pickStartupReconnectTarget(
  * @returns Concrete `{ reuseDevice, targetDeviceId }` plan for pre-upload connection recovery.
  */
 export function resolveUploadReconnectPlan(input: UploadReconnectInputs): UploadReconnectPlan {
+  const deleted = input.deletedDeviceIds ?? new Set<string>();
   const directCandidate =
     input.activeDeviceId ?? input.clientActiveId ?? input.prefs.lastActiveDeviceId;
-  if (directCandidate) {
+  if (directCandidate && !deleted.has(directCandidate)) {
     return {
       reuseDevice: true,
       targetDeviceId: directCandidate,
     };
   }
 
-  const liveSet = new Set(input.liveDeviceIds);
+  const liveSet = new Set(input.liveDeviceIds.filter((id) => !deleted.has(id)));
   const recentLiveId = pickMostRecentProfileId(input.savedDevices, liveSet);
   if (recentLiveId) {
     return {
@@ -284,7 +336,8 @@ export function resolveUploadReconnectPlan(input: UploadReconnectInputs): Upload
     };
   }
 
-  const recentSavedId = pickMostRecentProfileId(input.savedDevices);
+  const nonDeletedProfiles = input.savedDevices.filter((p) => !deleted.has(p.id));
+  const recentSavedId = pickMostRecentProfileId(nonDeletedProfiles);
   if (recentSavedId) {
     return {
       reuseDevice: true,
@@ -292,14 +345,22 @@ export function resolveUploadReconnectPlan(input: UploadReconnectInputs): Upload
     };
   }
 
-  if (input.liveDeviceIds.length > 0) {
+  const nonDeletedLive = input.liveDeviceIds.filter((id) => !deleted.has(id));
+  if (nonDeletedLive.length > 0) {
     return {
       reuseDevice: true,
-      targetDeviceId: input.liveDeviceIds[0],
+      targetDeviceId: nonDeletedLive[0],
     };
   }
 
-  if (input.canReconnect) {
+  if (input.canReconnect && input.clientActiveId && !deleted.has(input.clientActiveId)) {
+    return {
+      reuseDevice: true,
+      targetDeviceId: input.clientActiveId,
+    };
+  }
+
+  if (input.canReconnect && !input.clientActiveId) {
     return {
       reuseDevice: true,
       targetDeviceId: undefined,
@@ -355,6 +416,45 @@ export function saveDeviceProfiles(profiles: ReadonlyArray<SavedBadgeProfile>): 
     }
   } catch {
     // Ignore storage quota or private-mode failures
+  }
+}
+
+/**
+ * Reads user-deleted device tombstone IDs cleanly from `localStorage`.
+ *
+ * @returns Array of deleted device ID strings.
+ */
+export function loadDeletedDeviceIds(): ReadonlyArray<string> {
+  try {
+    if (typeof localStorage === "undefined") {
+      return [];
+    }
+    const raw = localStorage.getItem(DELETED_DEVICES_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((id): id is string => typeof id === "string" && id.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Persists deleted device tombstones into `localStorage`.
+ *
+ * @param ids - Immutable array of deleted device identifiers.
+ */
+export function saveDeletedDeviceIds(ids: ReadonlyArray<string>): void {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(DELETED_DEVICES_STORAGE_KEY, JSON.stringify(ids));
+    }
+  } catch {
+    // Ignore storage quota or private-mode restrictions
   }
 }
 

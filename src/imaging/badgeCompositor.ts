@@ -62,14 +62,14 @@ export function createDefaultTransform(): ImageTransform {
 }
 
 /**
- * Returns default optional text overlay settings (`enabled: false` so images come first).
+ * Returns default optional text overlay settings (`enabled: false`, empty text until user enters copy).
  *
  * @returns Immutable initial {@link TextOverlayConfig}.
  */
 export function createDefaultTextOverlay(): TextOverlayConfig {
   return {
     enabled: false,
-    text: "BG02",
+    text: "",
     fontFamily: "system-ui, sans-serif",
     fontSizePx: 28,
     textColor: "#ffffff",
@@ -77,6 +77,21 @@ export function createDefaultTextOverlay(): TextOverlayConfig {
     strokeWidthPx: 4,
     offsetY: 0,
   };
+}
+
+/**
+ * Checks whether the current badge draft contains explicit publishable user content
+ * (a loaded photo and/or enabled non-whitespace overlay text) rather than a blank canvas.
+ *
+ * @param hasSourceImage - `true` when a local image file is loaded cleanly.
+ * @param textOverlay - Current text overlay settings.
+ * @returns `true` if export/upload should be allowed.
+ */
+export function hasPublishableBadgeContent(
+  hasSourceImage: boolean,
+  textOverlay: TextOverlayConfig
+): boolean {
+  return hasSourceImage || (textOverlay.enabled && textOverlay.text.trim().length > 0);
 }
 
 /**
@@ -315,7 +330,8 @@ export async function encodeCanvasToJpegBytes(
  * @param textOverlay - Optional text overlay settings.
  * @param encoding - Auto-optimize or manual JPEG encoding configuration.
  * @param geometry - Target BG02 display geometry (defaults to `240x240` round).
- * @param reusableExportCanvas - Optional existing offscreen canvas to minimize allocations while dragging.
+ * @param reusableExportCanvas - Optional caller-owned isolated offscreen canvas (`undefined` allocates a fresh isolated canvas).
+ * @param draftGeneration - Monotonic edit generation stamped onto the encoded result.
  * @returns Verified Baseline JPEG binary, final size/quality telemetry, and clean export canvas.
  */
 export async function composeAndEncodeBadge(
@@ -328,7 +344,8 @@ export async function composeAndEncodeBadge(
     height: DEFAULT_DISPLAY_SIZE_PX,
     shape: "round",
   },
-  reusableExportCanvas?: HTMLCanvasElement
+  reusableExportCanvas?: HTMLCanvasElement,
+  draftGeneration = 0
 ): Promise<CompositedBadgeResult> {
   const exportCanvas = reusableExportCanvas ?? document.createElement("canvas");
   renderExportComposition(exportCanvas, sourceImage, transform, textOverlay, geometry);
@@ -375,12 +392,13 @@ export async function composeAndEncodeBadge(
 
   const inspection = inspectJpeg(selectedBytes);
   return {
-    jpegBytes: selectedBytes,
+    jpegBytes: new Uint8Array(selectedBytes),
     byteLength: selectedBytes.length,
     usedQuality,
     exceedsTarget: selectedBytes.length > encoding.targetMaxBytes,
     inspection,
     exportCanvas,
+    draftGeneration,
   };
 }
 

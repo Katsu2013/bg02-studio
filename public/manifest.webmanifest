@@ -1,25 +1,26 @@
 {
   "name": "BG02 Studio",
   "short_name": "BG02 Studio",
-  "description": "Privacy-first offline Web Bluetooth studio for BG02 circular smart badge images.",
+  "lang": "ja",
+  "description": "写真を丸く整えて、BG02デジタルバッジに送る。",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "background_color": "#0b1120",
-  "theme_color": "#0ea5e9",
+  "background_color": "#f7f6f3",
+  "theme_color": "#f7f6f3",
   "icons": [
     {
       "src": "./icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
       "src": "./icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }

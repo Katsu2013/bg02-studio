@@ -48,6 +48,8 @@ import {
   wrapDialPayload,
 } from "./frameCodec";
 import {
+  Bg02ConnectError,
+  type Bg02ConnectFailureReason,
   Bg02ProtocolError,
   type ClockDialInfo,
   type ConnectedDeviceMetadata,
@@ -69,8 +71,12 @@ import type {
 } from "./webBluetooth.types";
 import { BleWriteQueue, sleepMs, type QueueLogger } from "./writeQueue";
 
+export { Bg02ConnectError, type Bg02ConnectFailureReason };
+
 /** Internal pending promise entry awaiting a specific incoming `0xCD` command frame. */
 export interface PendingFrameWaiter {
+  /** Connection session generation active when this waiter was created. */
+  readonly sessionGeneration: number;
   /** Predicate inspecting command ID, sub-command key, and payload bytes. */
   readonly match: (cmdId: number, cmdKey: number, payload: Uint8Array) => boolean;
   /** Fulfillment callback receiving the matched frame. */
@@ -98,6 +104,15 @@ const disDecoder = new TextDecoder();
  * // 意図: セッション断・再接続時の二重リスナー登録や TX/RX 競合を防ぐため、
  * WeakSet 管理と直列書込キューを内包した状態機械として実装する。
  */
+/** Handle returned by `waitForFrame` exposing the pending response promise. */
+export interface WaitForFrameHandle {
+  /** Promise resolving with the matched incoming RX frame. */
+  readonly promise: Promise<ParsedRxFrame>;
+}
+
+/**
+ * Web Bluetooth GATT protocol client handling BG02 framing, telemetry queries, and chunked image upload.
+ */
 export class Bg02Client {
   /** Callback receiving chronological diagnostic logs. */
   private readonly logger: QueueLogger;
@@ -123,10 +138,18 @@ export class Bg02Client {
   private readonly waiters: PendingFrameWaiter[] = [];
   /** Active `WatchTheme3` response code (`0x20/0x01`) observer during dial upload. */
   private dialResponseHandler: ((code: number) => void) | null = null;
+  /** Abort hook immediately terminating an active upload promise on link teardown. */
+  private activeUploadAbort: ((err: Error) => void) | null = null;
+  /** Monotonic connection session generation incremented on every connect subscription & teardown. */
+  private sessionGeneration = 0;
+  /** Monotonic connect invocation sequence guarding against overlapping connect/disconnect calls. */
+  private connectAttemptSeq = 0;
   /** WeakSet preventing duplicate `gattserverdisconnected` listeners on cached devices. */
   private readonly boundDisconnectDevices = new WeakSet<WebBluetoothDevice>();
   /** WeakSet preventing duplicate `characteristicvaluechanged` listeners across reconnects. */
   private readonly boundNotifyChars = new WeakSet<WebBluetoothCharacteristic>();
+  /** Session generation recorded when a notify characteristic is actively subscribed. */
+  private readonly notifyCharGeneration = new WeakMap<WebBluetoothCharacteristic, number>();
   /** Preferred GATT write mode flag (`true` favors `writeValueWithoutResponse`). */
   private preferWriteWithoutResponse = false;
   /** Cached dial geometry retrieved during the active session. */
@@ -170,9 +193,12 @@ export class Bg02Client {
    * Queries `navigator.bluetooth.getDevices()` when supported and caches permitted device handles
    * so previously paired BG02 badges can auto-reconnect without reopening the browser picker.
    *
+   * @param excludedIds - Optional set of deleted/tombstoned `device.id` values to ignore.
    * @returns List of live `device.id` values currently available in {@link deviceCache}.
    */
-  public async refreshPermittedDevices(): Promise<ReadonlyArray<string>> {
+  public async refreshPermittedDevices(
+    excludedIds: ReadonlySet<string> = new Set()
+  ): Promise<ReadonlyArray<string>> {
     const bluetooth = typeof navigator !== "undefined" ? navigator.bluetooth : undefined;
     if (!bluetooth || typeof bluetooth.getDevices !== "function") {
       return this.getLiveDeviceIds();
@@ -180,6 +206,9 @@ export class Bg02Client {
     try {
       const devices = await bluetooth.getDevices();
       for (const dev of devices) {
+        if (excludedIds.has(dev.id)) {
+          continue;
+        }
         this.deviceCache.set(dev.id, dev);
         this.attachDisconnectHandler(dev);
       }
@@ -285,6 +314,15 @@ export class Bg02Client {
   }
 
   /**
+   * Returns the current monotonic GATT session generation counter.
+   *
+   * @returns Current session generation number.
+   */
+  public get currentSessionGeneration(): number {
+    return this.sessionGeneration;
+  }
+
+  /**
    * Connects (or reconnects) to a BG02 badge, subscribes to notification channels,
    * and transmits the mandatory `Lqm2.r` pairing handshake.
    *
@@ -303,6 +341,13 @@ export class Bg02Client {
     } = options;
     this.preferWriteWithoutResponse = preferWriteWithoutResponse;
 
+    const myConnectSeq = ++this.connectAttemptSeq;
+    const ensureNotSuperseded = (): void => {
+      if (myConnectSeq !== this.connectAttemptSeq) {
+        throw new Error("Connection attempt superseded by a newer connect or disconnect");
+      }
+    };
+
     const prevDeviceId = this.activeDeviceId;
     let targetDevice: WebBluetoothDevice;
 
@@ -310,7 +355,8 @@ export class Bg02Client {
       const lookupId = deviceId ?? this.activeDeviceId;
       const cached = lookupId ? this.deviceCache.get(lookupId) : undefined;
       if (!cached) {
-        throw new Error(
+        throw new Bg02ConnectError(
+          "permission_unavailable",
           "No live Bluetooth handle is cached for this badge yet; select it via chooser first."
         );
       }
@@ -320,6 +366,7 @@ export class Bg02Client {
         `Connecting directly to "${targetDevice.name || "(unnamed)"}" (${targetDevice.id})...`
       );
       await this.cleanDisconnect(false, true);
+      ensureNotSuperseded();
     } else {
       const requestOptions: WebBluetoothRequestDeviceOptions = {
         optionalServices: [
@@ -337,11 +384,13 @@ export class Bg02Client {
       this.logger("info", "Opening Web Bluetooth device chooser...");
       // 意図: ピッカーでユーザーがキャンセルした場合に既存接続を失わないよう、選択完了後に旧セッションを閉じる。
       targetDevice = await bluetooth.requestDevice(requestOptions);
+      ensureNotSuperseded();
       this.logger(
         "info",
         `Selected device: name="${targetDevice.name || "(unnamed)"}" id=${targetDevice.id}`
       );
       await this.cleanDisconnect(false, true);
+      ensureNotSuperseded();
       this.deviceCache.set(targetDevice.id, targetDevice);
       this.attachDisconnectHandler(targetDevice);
     }
@@ -353,21 +402,40 @@ export class Bg02Client {
     this.expectedDisconnectIds.delete(targetDevice.id);
 
     if (!targetDevice.gatt) {
-      throw new Error("Selected Bluetooth device does not expose a GATT server.");
+      throw new Bg02ConnectError(
+        "gatt_failed",
+        "Selected Bluetooth device does not expose a GATT server.",
+        { id: targetDevice.id, name: targetDevice.name ?? "" }
+      );
     }
 
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= GATT_CONNECT_MAX_ATTEMPTS; attempt++) {
+      ensureNotSuperseded();
       try {
         // 意図: Windows / Chrome 環境では初回サービス探索時に一過性切断が起きやすいため 1 回リトライを行う。
         this.logger("info", `GATT connection attempt (${attempt}/${GATT_CONNECT_MAX_ATTEMPTS})...`);
         const connectedServer = await targetDevice.gatt.connect();
+        if (myConnectSeq !== this.connectAttemptSeq) {
+          this.suppressedDisconnectIds.add(targetDevice.id);
+          try {
+            if (connectedServer.connected) {
+              targetDevice.gatt.disconnect();
+            }
+          } catch {
+            this.suppressedDisconnectIds.delete(targetDevice.id);
+          }
+          throw new Error("Connection attempt superseded by a newer connect or disconnect");
+        }
         this.suppressedDisconnectIds.delete(targetDevice.id);
         this.server = connectedServer;
-        await this.discoverAndSubscribe(connectedServer);
+        await this.discoverAndSubscribe(connectedServer, myConnectSeq);
         break;
       } catch (err) {
         lastError = err;
+        if (myConnectSeq !== this.connectAttemptSeq) {
+          throw err;
+        }
         const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
         this.logger("warn", `Connection attempt ${attempt} failed: ${reason}`);
         this.server = null;
@@ -378,19 +446,38 @@ export class Bg02Client {
       }
     }
 
+    ensureNotSuperseded();
+    const deviceMeta = { id: targetDevice.id, name: targetDevice.name ?? "" };
     if (!this.isConnected || !this.writeChar) {
-      if (lastError instanceof Error) {
-        throw lastError;
+      if (lastError instanceof Bg02ConnectError) {
+        if (lastError.deviceId) {
+          throw lastError;
+        }
+        throw new Bg02ConnectError(lastError.reason, lastError.message, deviceMeta);
       }
-      throw new Error("Failed to connect to BG02 GATT service (7e400001).");
+      if (lastError instanceof Error) {
+        throw new Bg02ConnectError("gatt_failed", lastError.message, deviceMeta);
+      }
+      throw new Bg02ConnectError(
+        "gatt_failed",
+        "Failed to connect to BG02 GATT service (7e400001).",
+        deviceMeta
+      );
     }
 
     // 意図: 実機は接続確立直後に Lqm2.r ペアリングフレームを受信するまでコマンド応答を返さない。
     const pairFrame = buildPairFrame();
-    await this.writeQueue.enqueue(pairFrame, {
-      delayAfterMs: PAIR_WRITE_DELAY_MS,
-      label: "PAIR (Lqm2.r)",
-    });
+    try {
+      await this.writeQueue.enqueue(pairFrame, {
+        delayAfterMs: PAIR_WRITE_DELAY_MS,
+        label: "PAIR (Lqm2.r)",
+      });
+    } catch (err) {
+      ensureNotSuperseded();
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Bg02ConnectError("gatt_failed", msg, deviceMeta);
+    }
+    ensureNotSuperseded();
 
     return {
       deviceId: targetDevice.id,
@@ -411,6 +498,7 @@ export class Bg02Client {
    * Disconnects the active GATT session while retaining the device reference for quick reconnect.
    */
   public async disconnect(): Promise<void> {
+    this.connectAttemptSeq += 1;
     await this.cleanDisconnect(false);
     this.logger("info", "Disconnected (device cached for dialog-free reconnect).");
   }
@@ -423,6 +511,10 @@ export class Bg02Client {
    * @throws {Error} When disconnected, response times out, or payload is malformed.
    */
   public async getDialInfo(timeoutMs = DIAL_INFO_TIMEOUT_MS): Promise<ClockDialInfo> {
+    if (!this.isConnected) {
+      throw new Error("BG02 is not connected");
+    }
+    const queryGen = this.sessionGeneration;
     const wait = this.waitForFrame(
       (cmdId, cmdKey) =>
         cmdId === BLE_MODULE.DIAL_CONTROL && cmdKey === BLE_SUB_CMD.GET_DIAL_INFO,
@@ -430,14 +522,21 @@ export class Bg02Client {
       "GET_DIAL_INFO (0x20/0x02)"
     );
 
-    await this.writeQueue.enqueue(buildGetDialInfoFrame(), {
-      delayAfterMs: COMMAND_WRITE_DELAY_MS,
-      label: "GET_DIAL_INFO (0x20/0x02)",
-    });
+    try {
+      await this.writeQueue.enqueue(buildGetDialInfoFrame(), {
+        delayAfterMs: COMMAND_WRITE_DELAY_MS,
+        label: "GET_DIAL_INFO (0x20/0x02)",
+      });
+    } catch (err) {
+      this.cancelWaiter(wait.promise);
+      throw err;
+    }
 
-    const { payload } = await wait;
+    const { payload } = await wait.promise;
     const parsed = parseClockDialInfo(payload);
-    this.lastDialInfo = parsed;
+    if (queryGen === this.sessionGeneration) {
+      this.lastDialInfo = parsed;
+    }
     this.logger(
       "info",
       `Dial info: ${parsed.width}x${parsed.height} (${parsed.shape}), ${parsed.algorithmName}, pkg=${parsed.watchThemeShortPkgLength}B`
@@ -452,6 +551,9 @@ export class Bg02Client {
    * @returns Available storage in bytes, or `null` if firmware omitted the 64-bit count.
    */
   public async getFreeStorage(timeoutMs = FREE_STORAGE_TIMEOUT_MS): Promise<number | null> {
+    if (!this.isConnected) {
+      throw new Error("BG02 is not connected");
+    }
     const wait = this.waitForFrame(
       (cmdId, cmdKey) =>
         cmdId === BLE_MODULE.DIAL_CONTROL && cmdKey === BLE_SUB_CMD.GET_FREE_STORAGE,
@@ -459,12 +561,17 @@ export class Bg02Client {
       "GET_FREE_STORAGE (0x20/0x04)"
     );
 
-    await this.writeQueue.enqueue(buildGetFreeStorageFrame(), {
-      delayAfterMs: COMMAND_WRITE_DELAY_MS,
-      label: "GET_FREE_STORAGE (0x20/0x04)",
-    });
+    try {
+      await this.writeQueue.enqueue(buildGetFreeStorageFrame(), {
+        delayAfterMs: COMMAND_WRITE_DELAY_MS,
+        label: "GET_FREE_STORAGE (0x20/0x04)",
+      });
+    } catch (err) {
+      this.cancelWaiter(wait.promise);
+      throw err;
+    }
 
-    const { cmdKey, payload } = await wait;
+    const { cmdKey, payload } = await wait.promise;
     this.logger(
       "rx",
       `Free storage response (0x20/0x${cmdKey.toString(16)}): ${toHexPreview(payload)}`
@@ -550,11 +657,21 @@ export class Bg02Client {
     imageBytes: Uint8Array,
     options: UploadDialOptions = {}
   ): Promise<UploadDialResult> {
-    if (!this.isConnected) {
+    if (!this.isConnected || !this.activeDeviceId) {
       throw new Error("BG02 is not connected");
+    }
+    if (options.expectedDeviceId && options.expectedDeviceId !== this.activeDeviceId) {
+      throw new Bg02ProtocolError(
+        `Target mismatch: expected device "${options.expectedDeviceId}", connected to "${this.activeDeviceId}"`
+      );
+    }
+    if (this.activeUploadAbort) {
+      throw new Error("Another WatchTheme3 upload is already in progress");
     }
 
     const startTimeMs = Date.now();
+    const uploadSessionGen = this.sessionGeneration;
+    const uploadDeviceId = this.activeDeviceId;
     const watchId = options.watchId ?? DEFAULT_WATCH_ID;
     const fileType = options.fileType ?? DIAL_FILE_TYPE_JPEG;
     const effectiveChunk =
@@ -569,7 +686,7 @@ export class Bg02Client {
 
     this.logger(
       "info",
-      `Starting WatchTheme3 upload: img=${imageBytes.length}B, wrapped=${wrapped.length}B, chunk=${effectiveChunk}B, watchId=${watchId}`
+      `Starting WatchTheme3 upload (id=${uploadDeviceId}, gen=${uploadSessionGen}): img=${imageBytes.length}B, wrapped=${wrapped.length}B, chunk=${effectiveChunk}B, watchId=${watchId}`
     );
 
     const startFrame = buildDialStartFrame({
@@ -579,16 +696,27 @@ export class Bg02Client {
       cfgMask: DIAL_CFG_MASK_BG_ONLY,
     });
 
+    type UploadPhase = "awaiting_start_ack" | "sending_chunks" | "awaiting_finish_ack";
+
     return new Promise<UploadDialResult>((resolve, reject) => {
+      let phase: UploadPhase = "awaiting_start_ack";
       let nextIdx = 0;
       let sentAckedIdx = -1;
+      let ackedChunks = 0;
       let offset = 0;
       let lastChunkPacket: Uint8Array | null = null;
       let retryCount = 0;
       let finishAttempt = 0;
       let finishSent = false;
+      let finishDispatched = false;
       let settled = false;
       let stallTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const isCurrentSession = (): boolean =>
+        !settled &&
+        this.isConnected &&
+        this.sessionGeneration === uploadSessionGen &&
+        this.activeDeviceId === uploadDeviceId;
 
       const clearTimer = (): void => {
         if (stallTimer !== null) {
@@ -600,6 +728,9 @@ export class Bg02Client {
       const cleanup = (): void => {
         clearTimer();
         this.dialResponseHandler = null;
+        if (this.activeUploadAbort === abortOnTeardown) {
+          this.activeUploadAbort = null;
+        }
       };
 
       const fail = (err: unknown): void => {
@@ -610,6 +741,11 @@ export class Bg02Client {
         cleanup();
         reject(err);
       };
+
+      const abortOnTeardown = (err: Error): void => {
+        fail(err);
+      };
+      this.activeUploadAbort = abortOnTeardown;
 
       const succeed = (): void => {
         if (settled) {
@@ -625,6 +761,7 @@ export class Bg02Client {
           totalChunks,
         });
         resolve({
+          deviceId: uploadDeviceId,
           imageBytes: imageBytes.length,
           payloadBytes: wrapped.length,
           totalChecksum,
@@ -638,12 +775,12 @@ export class Bg02Client {
         timeoutMs = DIAL_STEP_RESPONSE_TIMEOUT_MS
       ): void => {
         clearTimer();
-        if (settled) {
+        if (!isCurrentSession()) {
           return;
         }
         stallTimer = setTimeout(() => {
           stallTimer = null;
-          if (settled || nextIdx !== expectedNextIdx) {
+          if (!isCurrentSession() || nextIdx !== expectedNextIdx) {
             return;
           }
           onTimeout();
@@ -651,7 +788,7 @@ export class Bg02Client {
       };
 
       const handleFinishTimeout = async (expectedNext: number): Promise<void> => {
-        if (settled || nextIdx !== expectedNext || !finishSent) {
+        if (!isCurrentSession() || nextIdx !== expectedNext || !finishSent || phase !== "awaiting_finish_ack") {
           return;
         }
         if (finishAttempt >= DIAL_MAX_FINISH_RETRIES) {
@@ -671,10 +808,7 @@ export class Bg02Client {
       };
 
       const sendFinishFrame = async (isRetry: boolean, expectedNext: number): Promise<void> => {
-        if (settled) {
-          return;
-        }
-        if (!this.isConnected) {
+        if (!isCurrentSession()) {
           fail(new Error("BLE connection closed"));
           return;
         }
@@ -687,12 +821,14 @@ export class Bg02Client {
           if (settled || nextIdx !== expectedNext) {
             return;
           }
-          if (!this.isConnected) {
+          if (!isCurrentSession()) {
             fail(new Error("BLE connection closed"));
             return;
           }
         }
         const finishFrame = buildDialFinishFrame(totalChecksum);
+        phase = "awaiting_finish_ack";
+        finishDispatched = true;
         await this.writeQueue.enqueue(finishFrame, {
           delayAfterMs: DIAL_CHUNK_WRITE_DELAY_MS,
           label: isRetry
@@ -700,7 +836,7 @@ export class Bg02Client {
             : `DIAL_FINISH (sum=0x${totalChecksum.toString(16)})`,
         });
         // 意図: GATT 20B 分割送信の完了を待ってから応答・再送タイマーを起動する。
-        if (!settled && finishSent && nextIdx === expectedNext) {
+        if (isCurrentSession() && finishSent && nextIdx === expectedNext) {
           armTimer(
             expectedNext,
             () => {
@@ -714,10 +850,30 @@ export class Bg02Client {
       const sendNextOrFinish = async (): Promise<void> => {
         try {
           clearTimer();
+          if (!isCurrentSession()) {
+            fail(new Error("BLE connection closed"));
+            return;
+          }
           if (offset >= wrapped.length) {
+            if (ackedChunks < totalChunks || nextIdx !== totalChunks) {
+              fail(
+                new Bg02ProtocolError(
+                  `Chunk transfer invariant broken before finish (${ackedChunks}/${totalChunks})`
+                )
+              );
+              return;
+            }
             if (!finishSent) {
               finishSent = true;
               finishAttempt = 0;
+              onProgress({
+                ratio: 0.95,
+                sentBytes: wrapped.length,
+                totalBytes: wrapped.length,
+                currentChunk: totalChunks,
+                totalChunks,
+                stage: "awaiting_finish",
+              });
               await sendFinishFrame(false, nextIdx);
             }
             return;
@@ -737,7 +893,7 @@ export class Bg02Client {
 
           const handleChunkTimeout = async (): Promise<void> => {
             if (
-              settled ||
+              !isCurrentSession() ||
               nextIdx !== expectedNext ||
               !lastChunkPacket ||
               retryCount >= DIAL_MAX_CHUNK_RETRIES
@@ -755,7 +911,7 @@ export class Bg02Client {
                 delayAfterMs: DIAL_CHUNK_WRITE_DELAY_MS,
                 label: `RETRY #${idx1}`,
               });
-              if (!settled && nextIdx === expectedNext) {
+              if (isCurrentSession() && nextIdx === expectedNext) {
                 armTimer(expectedNext, () => {
                   void handleChunkTimeout();
                 });
@@ -780,9 +936,10 @@ export class Bg02Client {
             totalBytes: wrapped.length,
             currentChunk: idx1,
             totalChunks,
+            stage: "transferring",
           });
 
-          if (!settled && nextIdx === expectedNext) {
+          if (isCurrentSession() && nextIdx === expectedNext) {
             armTimer(expectedNext, () => {
               void handleChunkTimeout();
             });
@@ -793,25 +950,51 @@ export class Bg02Client {
       };
 
       this.dialResponseHandler = (code: number): void => {
-        if (settled) {
+        if (!isCurrentSession()) {
           return;
         }
-        this.logger("rx", `<- DIAL RESPONSE CODE: ${code}`);
+        this.logger("rx", `<- DIAL RESPONSE CODE: ${code} (phase=${phase})`);
         if (code >= DIAL_STATUS.SEQ_ACK_BASE && code < 100_000_000) {
           const seq = code - DIAL_STATUS.SEQ_ACK_BASE;
-          if ((seq === 0 && nextIdx === 0) || (seq === nextIdx && seq > sentAckedIdx)) {
+          if (phase === "awaiting_start_ack") {
+            if (seq === 0 && nextIdx === 0) {
+              clearTimer();
+              phase = "sending_chunks";
+              void sendNextOrFinish();
+            }
+            return;
+          }
+          if (phase === "sending_chunks") {
+            if (seq > 0 && seq === nextIdx && seq > sentAckedIdx) {
+              clearTimer();
+              ackedChunks = seq;
+              void sendNextOrFinish();
+            }
+            return;
+          }
+          return;
+        }
+
+        if (code === DIAL_STATUS.FINISH_OK) {
+          if (
+            phase === "awaiting_finish_ack" &&
+            finishDispatched &&
+            finishSent &&
+            offset >= wrapped.length &&
+            ackedChunks === totalChunks
+          ) {
             clearTimer();
-            void sendNextOrFinish();
+            succeed();
+          } else {
+            this.logger(
+              "warn",
+              `Ignoring premature/stale FINISH_OK (code=2) during phase=${phase} (acked=${ackedChunks}/${totalChunks})`
+            );
           }
           return;
         }
 
         clearTimer();
-        if (code === DIAL_STATUS.FINISH_OK) {
-          succeed();
-          return;
-        }
-
         const errorKey = DIAL_ERROR_KEY_MAP[code];
         fail(
           new Bg02ProtocolError(
@@ -830,12 +1013,13 @@ export class Bg02Client {
             totalBytes: wrapped.length,
             currentChunk: 0,
             totalChunks,
+            stage: "start",
           });
           await this.writeQueue.enqueue(startFrame, {
             delayAfterMs: DIAL_CHUNK_WRITE_DELAY_MS,
             label: "DIAL_START (0x1F/0x02)",
           });
-          if (!settled && nextIdx === 0) {
+          if (isCurrentSession() && phase === "awaiting_start_ack" && nextIdx === 0) {
             armTimer(0, () => {
               fail(new Bg02ProtocolError("Upload start ACK (responseCode=1000) timed out"));
             });
@@ -855,7 +1039,8 @@ export class Bg02Client {
    */
   private requireWebBluetooth(): WebBluetoothApi {
     if (typeof navigator === "undefined" || !navigator.bluetooth) {
-      throw new Error(
+      throw new Bg02ConnectError(
+        "unsupported",
         "Web Bluetooth API is not supported in this browser (requires Chrome / Edge over HTTPS or localhost)."
       );
     }
@@ -867,8 +1052,14 @@ export class Bg02Client {
    *
    * @param server - Connected GATT server instance.
    */
-  private async discoverAndSubscribe(server: WebBluetoothGattServer): Promise<void> {
+  private async discoverAndSubscribe(
+    server: WebBluetoothGattServer,
+    connectSeq: number
+  ): Promise<void> {
     const service: WebBluetoothService = await server.getPrimaryService(MYWATCH_SERVICE_UUID);
+    if (connectSeq !== this.connectAttemptSeq) {
+      throw new Error("Connection attempt superseded by a newer connect or disconnect");
+    }
     const writeChar = await service.getCharacteristic(MYWATCH_WRITE_UUID);
     const notify1 = await service.getCharacteristic(MYWATCH_NOTIFY1_UUID);
     const subscribed: WebBluetoothCharacteristic[] = [notify1];
@@ -880,28 +1071,42 @@ export class Bg02Client {
       // Some firmware builds expose only 7e400003
     }
 
+    if (connectSeq !== this.connectAttemptSeq) {
+      throw new Error("Connection attempt superseded by a newer connect or disconnect");
+    }
+
+    const sessionGen = ++this.sessionGeneration;
+    this.notifyChars = subscribed;
+    this.writeChar = writeChar;
+
     for (const ch of subscribed) {
+      this.notifyCharGeneration.set(ch, sessionGen);
       if (!this.boundNotifyChars.has(ch)) {
         this.boundNotifyChars.add(ch);
         ch.addEventListener("characteristicvaluechanged", (ev: Event) => {
+          if (
+            !this.isConnected ||
+            !this.notifyChars.includes(ch) ||
+            this.notifyCharGeneration.get(ch) !== this.sessionGeneration
+          ) {
+            return;
+          }
           const typed = ev as WebBluetoothValueChangedEvent;
           const dv = typed.target?.value;
           if (!dv) {
             return;
           }
           const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
-          this.handleNotify(bytes);
+          this.handleNotify(bytes, this.sessionGeneration);
         });
       }
       await ch.startNotifications();
       this.logger("info", `Subscribed notify characteristic: ${ch.uuid.slice(0, 8)}...`);
     }
 
-    this.writeChar = writeChar;
-    this.notifyChars = subscribed;
     this.logger(
       "info",
-      `GATT ready (write=${writeChar.properties.write}, writeNoResp=${writeChar.properties.writeWithoutResponse}, notifies=${subscribed.length})`
+      `GATT ready (gen=${sessionGen}, write=${writeChar.properties.write}, writeNoResp=${writeChar.properties.writeWithoutResponse}, notifies=${subscribed.length})`
     );
   }
 
@@ -909,8 +1114,13 @@ export class Bg02Client {
    * Handles incoming GATT notification chunks, sends mandatory `0xDC` ACKs, and dispatches frames.
    *
    * @param incomingPacket - Raw bytes extracted from a `characteristicvaluechanged` event.
+   * @param expectedSessionGen - Session generation verified before processing.
    */
-  private handleNotify(incomingPacket: Uint8Array): void {
+  private handleNotify(incomingPacket: Uint8Array, expectedSessionGen: number): void {
+    if (expectedSessionGen !== this.sessionGeneration || !this.isConnected) {
+      return;
+    }
+
     const result = consumeNotifyChunk(this.rxBuffer, incomingPacket);
     this.rxBuffer = new Uint8Array(result.nextBuffer);
 
@@ -919,6 +1129,9 @@ export class Bg02Client {
     }
 
     for (const frame of result.frames) {
+      if (expectedSessionGen !== this.sessionGeneration || !this.isConnected) {
+        return;
+      }
       this.logger(
         "rx",
         `<- RX cmd=0x${frame.cmdId.toString(16)} sub=0x${frame.cmdKey.toString(16)} (${frame.payload.length}B payload)`
@@ -937,7 +1150,7 @@ export class Bg02Client {
           this.logger("warn", `Failed to send 0xDC ACK: ${msg}`);
         });
 
-      this.dispatchFrame(frame);
+      this.dispatchFrame(frame, expectedSessionGen);
     }
   }
 
@@ -945,8 +1158,13 @@ export class Bg02Client {
    * Routes a decoded `0xCD` response frame to dial progress handlers and pending command waiters.
    *
    * @param frame - Complete parsed RX frame.
+   * @param expectedSessionGen - Active connection generation that decoded `frame`.
    */
-  private dispatchFrame(frame: ParsedRxFrame): void {
+  private dispatchFrame(frame: ParsedRxFrame, expectedSessionGen: number): void {
+    if (expectedSessionGen !== this.sessionGeneration) {
+      return;
+    }
+
     if (
       frame.cmdId === BLE_MODULE.DIAL_CONTROL &&
       frame.cmdKey === BLE_SUB_CMD.DIAL_RESPONSE &&
@@ -963,7 +1181,10 @@ export class Bg02Client {
 
     for (let i = 0; i < this.waiters.length; i++) {
       const waiter = this.waiters[i];
-      if (waiter.match(frame.cmdId, frame.cmdKey, frame.payload)) {
+      if (
+        waiter.sessionGeneration === this.sessionGeneration &&
+        waiter.match(frame.cmdId, frame.cmdKey, frame.payload)
+      ) {
         this.waiters.splice(i, 1);
         clearTimeout(waiter.timer);
         waiter.resolve(frame);
@@ -972,21 +1193,28 @@ export class Bg02Client {
     }
   }
 
+  /** Cancels a waiter created by {@link waitForFrame} when its write fails before transmission. */
+  private readonly waiterCleanup = new WeakMap<Promise<ParsedRxFrame>, () => void>();
+
   /**
    * Registers a timed one-shot waiter for a matching incoming `0xCD` frame.
    *
    * @param match - Predicate matching the expected module, sub-command, and payload.
    * @param timeoutMs - Timeout threshold in milliseconds.
    * @param label - Diagnostic command label included in timeout errors.
-   * @returns Promise resolving with the matched {@link ParsedRxFrame}.
+   * @returns Handle with `promise` resolving with {@link ParsedRxFrame}.
    */
   private waitForFrame(
     match: (cmdId: number, cmdKey: number, payload: Uint8Array) => boolean,
     timeoutMs: number,
     label: string
-  ): Promise<ParsedRxFrame> {
-    return new Promise<ParsedRxFrame>((resolve, reject) => {
+  ): WaitForFrameHandle {
+    const waiterGen = this.sessionGeneration;
+    let cancelFn: () => void = () => undefined;
+
+    const promise = new Promise<ParsedRxFrame>((resolve, reject) => {
       const waiter: PendingFrameWaiter = {
+        sessionGeneration: waiterGen,
         match,
         resolve,
         reject,
@@ -999,18 +1227,43 @@ export class Bg02Client {
         }, timeoutMs),
       };
       this.waiters.push(waiter);
+      cancelFn = () => {
+        clearTimeout(waiter.timer);
+        const idx = this.waiters.indexOf(waiter);
+        if (idx >= 0) {
+          this.waiters.splice(idx, 1);
+        }
+      };
     });
+
+    this.waiterCleanup.set(promise, cancelFn);
+    return { promise };
   }
 
   /**
-   * Clears runtime queues, RX buffer, and rejects any waiting callers when the link drops.
+   * Detaches and clears a pending waiter timer when outbound command enqueueing fails.
+   *
+   * @param waitPromise - Promise previously returned by {@link waitForFrame}.
+   */
+  private cancelWaiter(waitPromise: Promise<ParsedRxFrame>): void {
+    this.waiterCleanup.get(waitPromise)?.();
+  }
+
+  /**
+   * Advances session generation, clears queues/buffers, and aborts active waiters and uploads cleanly.
    */
   private resetSessionState(): void {
+    this.sessionGeneration += 1;
     this.writeChar = null;
     this.notifyChars = [];
     this.rxBuffer = new Uint8Array(0);
-    this.dialResponseHandler = null;
     const err = new Error("BLE connection closed");
+
+    const abortUpload = this.activeUploadAbort;
+    this.activeUploadAbort = null;
+    this.dialResponseHandler = null;
+    abortUpload?.(err);
+
     this.writeQueue.reset(err);
 
     while (this.waiters.length > 0) {

@@ -1,54 +1,80 @@
 /**
  * @module ui/screenRouter
- * Drill-down screen navigation utilities syncing view state, `inert` isolation,
- * browser `history.pushState`/`popstate` navigation, and non-scrolling focus restoration.
+ * Screen navigation helpers for the 5-screen BG02 workflow (`home` -> `editor` ->
+ * `send` -> `badges` -> `device-detail`), synchronizing browser History entries,
+ * `inert` / `aria-hidden` isolation, and keyboard focus restoration.
  */
 
 import type { AppScreenId } from "../state/appStore";
 
-/** Normalized screen navigation payload persisted inside browser History entries. */
+/** Serializable state payload stored in browser History entries (`history.state`). */
 export interface ScreenRouteState {
-  /** Active top-level screen (`"home" | "push" | "device-detail"`). */
+  /** Top-level visible screen identifier. */
   readonly screen: AppScreenId;
-  /** Optional focused badge identifier for `"device-detail"`, or `null`. */
+  /** Focused saved badge identifier when `screen === "device-detail"`. */
   readonly detailDeviceId: string | null;
+  /** Destination badge identifier pinned when entering `"send"` so `popstate` detects drift. */
+  readonly sendContextDeviceId?: string | null;
+  /** Return destination when navigating back out of `"badges"`. */
+  readonly badgesReturnScreen?: "home" | "send";
 }
 
-/** Valid screen identifiers accepted from browser history entries. */
 const VALID_SCREEN_IDS: ReadonlySet<AppScreenId> = new Set<AppScreenId>([
   "home",
-  "push",
+  "editor",
+  "send",
+  "badges",
   "device-detail",
 ]);
 
 /**
- * Type guard validating unknown `history.state` objects safely against {@link ScreenRouteState}.
+ * Validates and normalizes an untrusted `history.state` object from `popstate` events.
  *
- * @param raw - Unknown browser history state object from `popstate`.
- * @returns Normalized {@link ScreenRouteState}, defaulting cleanly to Home when malformed.
+ * @param raw - Unknown `PopStateEvent.state` payload.
+ * @returns Sanitized {@link ScreenRouteState} defaulting safely to `"home"`.
  */
 export function resolvePopStateRoute(raw: unknown): ScreenRouteState {
   if (!raw || typeof raw !== "object") {
-    return { screen: "home", detailDeviceId: null };
+    return {
+      screen: "home",
+      detailDeviceId: null,
+      sendContextDeviceId: null,
+      badgesReturnScreen: "home",
+    };
   }
-  const obj = raw as Record<string, unknown>;
-  const rawScreen = obj.screen;
+  const candidate = raw as Record<string, unknown>;
+  const rawScreen = candidate.screen;
   const screen: AppScreenId =
     typeof rawScreen === "string" && VALID_SCREEN_IDS.has(rawScreen as AppScreenId)
       ? (rawScreen as AppScreenId)
       : "home";
-  const detailDeviceId = typeof obj.detailDeviceId === "string" ? obj.detailDeviceId : null;
-  return { screen, detailDeviceId };
+  const detailDeviceId =
+    typeof candidate.detailDeviceId === "string" && candidate.detailDeviceId.length > 0
+      ? candidate.detailDeviceId
+      : null;
+  const sendContextDeviceId =
+    typeof candidate.sendContextDeviceId === "string" &&
+    candidate.sendContextDeviceId.length > 0
+      ? candidate.sendContextDeviceId
+      : null;
+  const badgesReturnScreen: "home" | "send" =
+    candidate.badgesReturnScreen === "send" ? "send" : "home";
+
+  return {
+    screen,
+    detailDeviceId: screen === "device-detail" ? detailDeviceId : null,
+    sendContextDeviceId: screen === "send" ? sendContextDeviceId : null,
+    badgesReturnScreen,
+  };
 }
 
 /**
- * Determines whether navigating between two screens should append a browser history entry
- * so hardware/OS Back buttons and swipe-back gestures return cleanly to the Home screen.
+ * Determines whether transitioning from `fromScreen` to `toScreen` should push a browser History entry.
  *
- * @param fromScreen - Current active screen before transition.
- * @param toScreen - Target screen after transition.
- * @param viaPopState - `true` when triggered by an external browser `popstate` event.
- * @returns `true` if `history.pushState()` should record the drill-down step.
+ * @param fromScreen - Current active screen ID.
+ * @param toScreen - Destination screen ID.
+ * @param viaPopState - `true` when already responding to browser Back/Forward navigation.
+ * @returns `true` whenever a manual transition crosses between two distinct screens.
  */
 export function shouldPushHistoryEntry(
   fromScreen: AppScreenId,
@@ -58,47 +84,46 @@ export function shouldPushHistoryEntry(
   if (viaPopState) {
     return false;
   }
-  return fromScreen === "home" && toScreen !== "home";
+  return fromScreen !== toScreen;
 }
 
 /**
- * Isolates inactive drill-down screens cleanly by toggling both `hidden` and `inert`
- * so keyboard navigation and screen readers never leak into non-visible screens.
- *
- * // 意図: stack-drill-down ガイドラインに従い、表示中の画面以外に `inert` と `aria-hidden` を適用してフォーカス漏れを防ぐ。
+ * Applies accessible screen visibility, `inert` isolation, and directional transition flags
+ * across all top-level screen elements.
  *
  * @param panels - Mapping from each {@link AppScreenId} to its root container element.
- * @param activeScreen - Currently visible screen identifier.
- * @param direction - Entrance animation hint (`"forward" | "back" | "none"`).
+ * @param activeScreen - Screen currently visible to the user.
+ * @param direction - Directional hint (`"forward"` | `"back"`) for optional reduced-motion-safe CSS.
  */
 export function applyScreenVisibility(
   panels: Readonly<Record<AppScreenId, HTMLElement>>,
   activeScreen: AppScreenId,
-  direction: "forward" | "back" | "none" = "none"
+  direction: "forward" | "back" = "forward"
 ): void {
   const entries = Object.entries(panels) as Array<[AppScreenId, HTMLElement]>;
   for (const [screenId, panel] of entries) {
     const isActive = screenId === activeScreen;
     panel.hidden = !isActive;
     panel.inert = !isActive;
-    panel.setAttribute("aria-hidden", String(!isActive));
-    panel.setAttribute("data-active", String(isActive));
-    if (isActive && direction !== "none") {
-      panel.setAttribute("data-nav-dir", direction);
-    } else if (!isActive) {
-      panel.removeAttribute("data-nav-dir");
+    panel.setAttribute("aria-hidden", isActive ? "false" : "true");
+    if (isActive) {
+      panel.setAttribute("data-active", "true");
+      panel.setAttribute("data-nav-direction", direction);
+    } else {
+      panel.removeAttribute("data-active");
+      panel.removeAttribute("data-nav-direction");
     }
   }
 }
 
 /**
- * Moves focus safely after a drill-down or Back transition without causing jarring page scroll jumps.
+ * Moves keyboard focus to a prominent control inside the newly revealed screen
+ * without scrolling the viewport unexpectedly.
  *
- * @param target - Element receiving focus (e.g., Back button or restoring trigger), or `null`.
+ * @param target - Primary heading, Back button, or trigger element on the revealed screen.
  */
 export function focusAfterNavigation(target: HTMLElement | null): void {
-  if (!target || !target.isConnected) {
-    return;
+  if (target && target.isConnected) {
+    target.focus({ preventScroll: true });
   }
-  target.focus({ preventScroll: true });
 }
