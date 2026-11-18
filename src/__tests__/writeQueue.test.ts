@@ -91,4 +91,33 @@ describe("BleWriteQueue", () => {
     const queue = new BleWriteQueue(() => null, () => false, () => undefined);
     await expect(queue.enqueue(new Uint8Array([1, 2]))).rejects.toThrow("BG02 is not connected");
   });
+
+  it("whenIdle waits until active writes drain or resets cleanly", async () => {
+    const { char } = createMockCharacteristic();
+    let releaseWrite: () => void = () => undefined;
+    const blockingChar: WebBluetoothCharacteristic = {
+      ...char,
+      writeValueWithResponse: async () => {
+        await new Promise<void>((res) => {
+          releaseWrite = res;
+        });
+      },
+    };
+
+    const queue = new BleWriteQueue(() => blockingChar, () => false, () => undefined);
+    await queue.whenIdle();
+
+    let idleResolved = false;
+    const writePromise = queue.enqueue(new Uint8Array([0xdc, 0x00, 0x05]), { delayAfterMs: 0 });
+    const idlePromise = queue.whenIdle().then(() => {
+      idleResolved = true;
+    });
+
+    await Promise.resolve();
+    expect(idleResolved).toBe(false);
+
+    releaseWrite();
+    await Promise.all([writePromise, idlePromise]);
+    expect(idleResolved).toBe(true);
+  });
 });

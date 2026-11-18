@@ -17,6 +17,8 @@ import {
   MYWATCH_NOTIFY2_UUID,
   MYWATCH_SERVICE_UUID,
   MYWATCH_WRITE_UUID,
+  STANDARD_CHARACTERISTICS,
+  STANDARD_SERVICES,
 } from "../constants/ble";
 
 class FakeCharacteristic extends EventTarget implements WebBluetoothCharacteristic {
@@ -356,5 +358,118 @@ describe("Bg02Client WatchTheme3 finish recovery & error classification", () => 
     const localOnly = await client.forgetCachedDevice("dev-forget-no");
     expect(localOnly).toBe(false);
     expect(client.hasLiveDevice("dev-forget-no")).toBe(false);
+  });
+
+  it("drains pending ACK writes before Battery readValue, retries transient NetworkError, and forwards 0x2A19 notifications", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    let releaseAckWrite: () => void = () => undefined;
+    let holdNextAckWrite = false;
+    let batteryReads = 0;
+
+    const writeChar = new FakeCharacteristic(MYWATCH_WRITE_UUID);
+    writeChar.writeValueWithResponse = async (value: BufferSource) => {
+      const view =
+        value instanceof ArrayBuffer
+          ? new Uint8Array(value)
+          : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      writeChar.writes.push(view);
+      if (holdNextAckWrite && view[0] === 0xdc) {
+        holdNextAckWrite = false;
+        events.push("ack:start");
+        await new Promise<void>((res) => {
+          releaseAckWrite = () => {
+            events.push("ack:done");
+            res();
+          };
+        });
+      }
+    };
+
+    const notify1 = new FakeCharacteristic(MYWATCH_NOTIFY1_UUID);
+    const notify2 = new FakeCharacteristic(MYWATCH_NOTIFY2_UUID);
+    const batteryChar = new FakeCharacteristic(STANDARD_CHARACTERISTICS.BATTERY_LEVEL);
+    batteryChar.readValue = async () => {
+      batteryReads += 1;
+      events.push(`battery:read#${batteryReads}`);
+      if (batteryReads === 1) {
+        throw new DOMException("Simulated Android GATT busy", "NetworkError");
+      }
+      return new DataView(new Uint8Array([77]).buffer);
+    };
+
+    const myWatchSvc: WebBluetoothService = {
+      uuid: MYWATCH_SERVICE_UUID,
+      getCharacteristic: async (uuid: string | number) => {
+        if (uuid === MYWATCH_WRITE_UUID) return writeChar;
+        if (uuid === MYWATCH_NOTIFY1_UUID) return notify1;
+        if (uuid === MYWATCH_NOTIFY2_UUID) return notify2;
+        throw new Error(`Unexpected char: ${uuid}`);
+      },
+    };
+    const batterySvc: WebBluetoothService = {
+      uuid: "0000180f-0000-1000-8000-00805f9b34fb",
+      getCharacteristic: async (uuid: string | number) => {
+        if (uuid === STANDARD_CHARACTERISTICS.BATTERY_LEVEL) return batteryChar;
+        throw new Error(`Unexpected char: ${uuid}`);
+      },
+    };
+
+    let connected = false;
+    const dev: WebBluetoothDevice = Object.assign(new EventTarget(), {
+      id: "dev-android-batt",
+      name: "BG02",
+      gatt: {
+        get connected() {
+          return connected;
+        },
+        connect: async () => {
+          connected = true;
+          return dev.gatt!;
+        },
+        disconnect: () => {
+          connected = false;
+        },
+        getPrimaryService: async (svc: string | number) => {
+          if (svc === STANDARD_SERVICES.BATTERY) return batterySvc;
+          if (svc === MYWATCH_SERVICE_UUID) return myWatchSvc;
+          throw new Error(`Optional service absent: ${String(svc)}`);
+        },
+      } as WebBluetoothGattServer,
+    });
+
+    restoreNav = stubNavigatorBluetooth({
+      requestDevice: vi.fn(async () => dev),
+    });
+
+    const client = new Bg02Client();
+    const notifiedLevels: number[] = [];
+    client.setOnBatteryChange((pct) => notifiedLevels.push(pct));
+
+    const connectP = client.connect();
+    await vi.runAllTimersAsync();
+    await connectP;
+
+    holdNextAckWrite = true;
+    const freeP = client.getFreeStorage();
+    await vi.advanceTimersByTimeAsync(15);
+
+    const payload = new Uint8Array([0, 0, 0, 0, 0, 5, 112, 0]);
+    notify1.emitNotify(encodeCmdPayload(BLE_MODULE.DIAL_CONTROL, BLE_SUB_CMD.GET_FREE_STORAGE, payload));
+    expect(await freeP).toBe(356352);
+
+    const stdP = client.readStandardInfo();
+    await Promise.resolve();
+    expect(events).toEqual(["ack:start"]);
+
+    releaseAckWrite();
+    await vi.runAllTimersAsync();
+    const std = await stdP;
+
+    expect(std.batteryPercent).toBe(77);
+    expect(events).toEqual(["ack:start", "ack:done", "battery:read#1", "battery:read#2"]);
+
+    batteryChar.emitNotify(new Uint8Array([68]));
+    expect(notifiedLevels).toEqual([68]);
   });
 });

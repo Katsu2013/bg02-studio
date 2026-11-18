@@ -58,6 +58,8 @@ export class BleWriteQueue {
   private activeDrainToken: number | null = null;
   /** Rejection hook for the item currently mid-write so `reset()` never leaves callers hanging. */
   private activeInFlightReject: ((err: Error) => void) | null = null;
+  /** Promises waiting for the active write queue to finish draining. */
+  private readonly idleWaiters: Array<() => void> = [];
   /** Callback querying current GATT write characteristic when connected, or `null`. */
   private readonly getWriteCharacteristic: () => WebBluetoothCharacteristic | null;
   /** Callback indicating whether to prefer `writeValueWithoutResponse`. */
@@ -120,6 +122,21 @@ export class BleWriteQueue {
   }
 
   /**
+   * Resolves once any active writes finish draining or the queue resets.
+   *
+   * // 意図: Android の BluetoothGatt は 0xDC ACK の writeValue 実行中に並行して readValue (電池残量等) を発行すると
+   * //       mDeviceBusy / GATT エラーで拒否されやすいため、標準 GATT 読取前に書込キューの完了を待機する。
+   */
+  public whenIdle(): Promise<void> {
+    if (this.activeDrainToken === null && this.queue.length === 0) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      this.idleWaiters.push(resolve);
+    });
+  }
+
+  /**
    * Advances queue generation and rejects any in-flight or queued writes immediately on teardown.
    *
    * @param error - Error instance passed to waiting caller promises.
@@ -134,6 +151,18 @@ export class BleWriteQueue {
     while (this.queue.length > 0) {
       const item = this.queue.shift();
       item?.reject(error);
+    }
+    this.notifyIdleWaiters();
+  }
+
+  /** Releases callers awaiting {@link whenIdle} once no writes remain queued or active. */
+  private notifyIdleWaiters(): void {
+    if (this.idleWaiters.length === 0) {
+      return;
+    }
+    const pending = this.idleWaiters.splice(0, this.idleWaiters.length);
+    for (const resolve of pending) {
+      resolve();
     }
   }
 
@@ -223,6 +252,8 @@ export class BleWriteQueue {
         this.activeDrainToken = null;
         if (this.queue.length > 0 && this.getWriteCharacteristic() !== null) {
           void this.drain();
+        } else {
+          this.notifyIdleWaiters();
         }
       }
     }

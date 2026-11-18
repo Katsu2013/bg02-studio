@@ -95,6 +95,14 @@ export interface PendingFrameWaiter {
  */
 export type DisconnectListener = (reason: DisconnectReason, deviceId: string) => void;
 
+/**
+ * Callback invoked when Battery Level (`0x2A19`) emits an updated percentage notification.
+ *
+ * @param batteryPercent - Reported battery percentage (`0`..`100`).
+ * @param deviceId - Web Bluetooth identifier of the reporting badge.
+ */
+export type BatteryChangeListener = (batteryPercent: number, deviceId: string) => void;
+
 /** Shared UTF-8 decoder for reading Device Information Service (DIS) strings. */
 const disDecoder = new TextDecoder();
 
@@ -150,12 +158,22 @@ export class Bg02Client {
   private readonly boundNotifyChars = new WeakSet<WebBluetoothCharacteristic>();
   /** Session generation recorded when a notify characteristic is actively subscribed. */
   private readonly notifyCharGeneration = new WeakMap<WebBluetoothCharacteristic, number>();
+  /** Active standard Battery Level (`0x2A19`) characteristic when notifications are enabled. */
+  private batteryNotifyChar: WebBluetoothCharacteristic | null = null;
+  /** WeakSet preventing duplicate `0x2A19` battery notification listeners across reconnects. */
+  private readonly boundBatteryChars = new WeakSet<WebBluetoothCharacteristic>();
+  /** Session generation recorded when a Battery Level characteristic is subscribed. */
+  private readonly batteryCharGeneration = new WeakMap<WebBluetoothCharacteristic, number>();
+  /** Device identifier mapped to each Battery Level characteristic for listener isolation. */
+  private readonly batteryCharDeviceIds = new WeakMap<WebBluetoothCharacteristic, string>();
   /** Preferred GATT write mode flag (`true` favors `writeValueWithoutResponse`). */
   private preferWriteWithoutResponse = false;
   /** Cached dial geometry retrieved during the active session. */
   private lastDialInfo: ClockDialInfo | null = null;
   /** Optional disconnect observer triggered when remote GATT connection drops. */
   private onDisconnectCallback: DisconnectListener | null = null;
+  /** Optional observer notified when `0x2A19` delivers live battery percentage updates. */
+  private onBatteryChangeCallback: BatteryChangeListener | null = null;
 
   /**
    * Constructs a new {@link Bg02Client}.
@@ -187,6 +205,15 @@ export class Bg02Client {
    */
   public setOnDisconnect(listener: DisconnectListener | null): void {
     this.onDisconnectCallback = listener;
+  }
+
+  /**
+   * Registers a callback notified when Battery Level (`0x2A19`) pushes an updated percentage.
+   *
+   * @param listener - Callback or `null` to detach.
+   */
+  public setOnBatteryChange(listener: BatteryChangeListener | null): void {
+    this.onBatteryChangeCallback = listener;
   }
 
   /**
@@ -582,6 +609,9 @@ export class Bg02Client {
   /**
    * Reads standard BLE Battery Service (`0x180F`) and Device Information Service (`0x180A`).
    *
+   * // 意図: Android の BluetoothGatt は 0xDC ACK の writeValue と並行して readValue() を投げると
+   * //       mDeviceBusy / GATT エラーで失敗しやすいため、書込キューのアイドルを待ってから読取とリトライを行う。
+   *
    * @returns Populated {@link StandardDeviceInfo} containing readable optional fields.
    * @throws {Error} When the GATT server is not connected.
    */
@@ -590,17 +620,8 @@ export class Bg02Client {
       throw new Error("BG02 is not connected");
     }
 
-    let batteryPercent: number | undefined;
-    try {
-      const batteryService = await this.server.getPrimaryService(STANDARD_SERVICES.BATTERY);
-      const levelChar = await batteryService.getCharacteristic(
-        STANDARD_CHARACTERISTICS.BATTERY_LEVEL
-      );
-      const val = await levelChar.readValue();
-      batteryPercent = val.getUint8(0);
-    } catch {
-      // Optional service or restricted on some firmware states
-    }
+    const sessionGen = this.sessionGeneration;
+    const batteryPercent = await this.readBatteryPercent(sessionGen);
 
     let manufacturer: string | undefined;
     let model: string | undefined;
@@ -608,25 +629,29 @@ export class Bg02Client {
     let hardwareRevision: string | undefined;
     let softwareRevision: string | undefined;
 
-    try {
-      const dis = await this.server.getPrimaryService(STANDARD_SERVICES.DEVICE_INFO);
-      const readDisString = async (uuid: string): Promise<string | undefined> => {
-        try {
-          const ch = await dis.getCharacteristic(uuid);
-          const dv = await ch.readValue();
-          return disDecoder.decode(dv).replace(/\0+$/, "");
-        } catch {
-          return undefined;
-        }
-      };
+    await this.writeQueue.whenIdle();
+    if (this.server?.connected && sessionGen === this.sessionGeneration) {
+      try {
+        const dis = await this.server.getPrimaryService(STANDARD_SERVICES.DEVICE_INFO);
+        const readDisString = async (uuid: string): Promise<string | undefined> => {
+          try {
+            await this.writeQueue.whenIdle();
+            const ch = await dis.getCharacteristic(uuid);
+            const dv = await ch.readValue();
+            return disDecoder.decode(dv).replace(/\0+$/, "");
+          } catch {
+            return undefined;
+          }
+        };
 
-      manufacturer = await readDisString(STANDARD_CHARACTERISTICS.MANUFACTURER_NAME);
-      model = await readDisString(STANDARD_CHARACTERISTICS.MODEL_NUMBER);
-      firmwareRevision = await readDisString(STANDARD_CHARACTERISTICS.FIRMWARE_REVISION);
-      hardwareRevision = await readDisString(STANDARD_CHARACTERISTICS.HARDWARE_REVISION);
-      softwareRevision = await readDisString(STANDARD_CHARACTERISTICS.SOFTWARE_REVISION);
-    } catch {
-      // Optional service
+        manufacturer = await readDisString(STANDARD_CHARACTERISTICS.MANUFACTURER_NAME);
+        model = await readDisString(STANDARD_CHARACTERISTICS.MODEL_NUMBER);
+        firmwareRevision = await readDisString(STANDARD_CHARACTERISTICS.FIRMWARE_REVISION);
+        hardwareRevision = await readDisString(STANDARD_CHARACTERISTICS.HARDWARE_REVISION);
+        softwareRevision = await readDisString(STANDARD_CHARACTERISTICS.SOFTWARE_REVISION);
+      } catch {
+        // Optional service
+      }
     }
 
     return {
@@ -637,6 +662,140 @@ export class Bg02Client {
       hardwareRevision,
       softwareRevision,
     };
+  }
+
+  /** Formats a Web Bluetooth exception into a compact `Name: Message` log string. */
+  private formatBleErrorReason(err: unknown): string {
+    return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  }
+
+  /** Classifies whether a failed GATT read may recover on short retry (e.g. Android `mDeviceBusy`). */
+  private isTransientGattReadError(err: unknown): boolean {
+    if (!(err instanceof Error)) {
+      return false;
+    }
+    if (
+      err.name === "SecurityError" ||
+      err.name === "NotFoundError" ||
+      err.name === "InvalidStateError"
+    ) {
+      return false;
+    }
+    return (
+      err.name === "NetworkError" ||
+      err.name === "NotSupportedError" ||
+      err.name === "NotReadableError" ||
+      err.name === "AbortError" ||
+      err.name === "OperationError" ||
+      /busy|gatt|in progress/i.test(err.message)
+    );
+  }
+
+  /** Extracts a validated `0..100` battery percentage byte from a `DataView`. */
+  private extractBatteryPercent(dv: DataView | null | undefined): number | undefined {
+    if (!dv || dv.byteLength < 1) {
+      return undefined;
+    }
+    const val = dv.getUint8(0);
+    return val >= 0 && val <= 100 ? val : undefined;
+  }
+
+  /**
+   * Subscribes to `0x2A19` Battery Level notifications when supported, mirroring the official Android SDK.
+   *
+   * @param levelChar - Resolved `0x2A19` GATT characteristic.
+   * @param sessionGen - Active session generation token.
+   * @param deviceId - Connected badge identifier.
+   */
+  private async subscribeBatteryNotifications(
+    levelChar: WebBluetoothCharacteristic,
+    sessionGen: number,
+    deviceId: string
+  ): Promise<void> {
+    if (!levelChar.properties?.notify || typeof levelChar.startNotifications !== "function") {
+      return;
+    }
+    this.batteryNotifyChar = levelChar;
+    this.batteryCharGeneration.set(levelChar, sessionGen);
+    this.batteryCharDeviceIds.set(levelChar, deviceId);
+
+    if (!this.boundBatteryChars.has(levelChar)) {
+      this.boundBatteryChars.add(levelChar);
+      levelChar.addEventListener("characteristicvaluechanged", (ev: Event) => {
+        if (!this.isConnected || this.batteryCharGeneration.get(levelChar) !== this.sessionGeneration) {
+          return;
+        }
+        const typed = ev as WebBluetoothValueChangedEvent;
+        const pct = this.extractBatteryPercent(typed.target?.value);
+        const ownerId = this.batteryCharDeviceIds.get(levelChar);
+        if (pct !== undefined && ownerId) {
+          this.logger("rx", `<- RX Battery notify (0x2A19): ${pct}%`);
+          this.onBatteryChangeCallback?.(pct, ownerId);
+        }
+      });
+    }
+
+    await levelChar.startNotifications();
+  }
+
+  /**
+   * Reads standard Battery Level (`0x180F/0x2A19`) after draining queued writes and retrying transient Android GATT failures.
+   *
+   * @param sessionGen - Session generation guard preventing stale updates across reconnects.
+   * @returns Battery percentage (`0..100`) or `undefined` when unavailable.
+   */
+  private async readBatteryPercent(sessionGen: number): Promise<number | undefined> {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await this.writeQueue.whenIdle();
+      if (!this.server?.connected || sessionGen !== this.sessionGeneration) {
+        return undefined;
+      }
+      try {
+        const batteryService = await this.server.getPrimaryService(STANDARD_SERVICES.BATTERY);
+        const levelChar = await batteryService.getCharacteristic(
+          STANDARD_CHARACTERISTICS.BATTERY_LEVEL
+        );
+        let pct: number | undefined;
+        if (levelChar.properties?.read !== false) {
+          const val = await levelChar.readValue();
+          pct = this.extractBatteryPercent(val);
+        }
+        if (sessionGen === this.sessionGeneration && this.activeDeviceId) {
+          try {
+            await this.subscribeBatteryNotifications(levelChar, sessionGen, this.activeDeviceId);
+            if (pct === undefined) {
+              pct = this.extractBatteryPercent(levelChar.value);
+            }
+          } catch (subErr) {
+            this.logger(
+              "warn",
+              `Battery notify subscription skipped: ${this.formatBleErrorReason(subErr)}`
+            );
+          }
+        }
+        return pct;
+      } catch (err) {
+        if (
+          attempt < 3 &&
+          this.server?.connected &&
+          sessionGen === this.sessionGeneration &&
+          this.isTransientGattReadError(err)
+        ) {
+          this.logger(
+            "warn",
+            `Battery read attempt ${attempt}/3 failed (${this.formatBleErrorReason(err)}); retrying...`
+          );
+          await sleepMs(150);
+          continue;
+        }
+        this.logger(
+          "warn",
+          `Battery Service (0x180F/0x2A19) read failed: ${this.formatBleErrorReason(err)}`
+        );
+        return undefined;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -1256,6 +1415,7 @@ export class Bg02Client {
     this.sessionGeneration += 1;
     this.writeChar = null;
     this.notifyChars = [];
+    this.batteryNotifyChar = null;
     this.rxBuffer = new Uint8Array(0);
     const err = new Error("BLE connection closed");
 
@@ -1317,7 +1477,10 @@ export class Bg02Client {
    */
   private async cleanDisconnect(clearDevice: boolean, suppressCallback = false): Promise<void> {
     const activeDev = this.device;
-    for (const ch of this.notifyChars) {
+    const stopChars = this.batteryNotifyChar
+      ? [...this.notifyChars, this.batteryNotifyChar]
+      : this.notifyChars;
+    for (const ch of stopChars) {
       try {
         if (this.server?.connected) {
           await ch.stopNotifications();

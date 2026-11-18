@@ -6,6 +6,8 @@
 
 /** Bitfield flags describing capabilities supported by a GATT characteristic. */
 export interface WebBluetoothCharacteristicProperties {
+  /** Whether characteristic reads (`readValue`) are permitted. */
+  readonly read?: boolean;
   /** Whether reliable Write With Response is supported. */
   readonly write: boolean;
   /** Whether faster Write Without Response is supported. */

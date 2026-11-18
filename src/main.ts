@@ -615,6 +615,30 @@ export class Bg02StudioApp {
       }
     });
 
+    this.client.setOnBatteryChange((batteryPercent, deviceId) => {
+      const snap = this.store.snapshot;
+      if (snap.activeDeviceId !== deviceId || !snap.metadata || snap.metadata.deviceId !== deviceId) {
+        return;
+      }
+      const nextMeta: ConnectedDeviceMetadata = {
+        ...snap.metadata,
+        standardInfo: {
+          ...snap.metadata.standardInfo,
+          batteryPercent,
+        },
+      };
+      const nextSaved = upsertDeviceProfile(snap.savedDevices, {
+        id: deviceId,
+        advertisedName: nextMeta.deviceName ?? "BG02",
+        batteryPercent,
+      });
+      saveDeviceProfiles(nextSaved);
+      this.store.patchState({
+        metadata: nextMeta,
+        savedDevices: nextSaved,
+      });
+    });
+
     this.syncCanvasAndPreviewOnly();
     this.startTelemetryPoller();
     if (!deps.disableServiceWorkerRegistration) {
@@ -1375,7 +1399,15 @@ export class Bg02StudioApp {
     }
 
     try {
-      standardInfo = await this.client.readStandardInfo();
+      const nextStd = await this.client.readStandardInfo();
+      standardInfo = {
+        batteryPercent: nextStd.batteryPercent ?? standardInfo?.batteryPercent,
+        manufacturer: nextStd.manufacturer ?? standardInfo?.manufacturer,
+        model: nextStd.model ?? standardInfo?.model,
+        firmwareRevision: nextStd.firmwareRevision ?? standardInfo?.firmwareRevision,
+        hardwareRevision: nextStd.hardwareRevision ?? standardInfo?.hardwareRevision,
+        softwareRevision: nextStd.softwareRevision ?? standardInfo?.softwareRevision,
+      };
     } catch {
       // Optional DIS/Battery services missing
     }

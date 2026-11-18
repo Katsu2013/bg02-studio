@@ -84,13 +84,6 @@ npm run docs      # Validate & generate TypeDoc API reference
 
 ---
 
-## Code Documentation Policy
-
-- Zero external runtime dependencies (`dependencies` is empty).
-- Every class, interface, type, function, variable, and constant includes **TypeDoc (`/** ... */`)** documentation, alongside explicit **intent comments** explaining non-obvious hardware/protocol constraints.
-
----
-
 ## Disclaimer & License
 
 - Unofficial community tool created from protocol analysis and hardware testing; not affiliated with the device manufacturer. No vendor binaries or APK assets are included.
